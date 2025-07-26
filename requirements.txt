@@ -1,0 +1,12 @@
+fastapi
+uvicorn
+python-multipart
+pydantic
+sentence-transformers
+chromadb
+pymupdf
+python-docx
+openai
+redis
+requests
+tqdm
