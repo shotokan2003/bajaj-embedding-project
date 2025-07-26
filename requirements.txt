@@ -1,0 +1,9 @@
+fastapi
+uvicorn
+httpx
+pdfplumber
+pinecone
+sentence-transformers
+cachetools
+groq      # Official Groq Python SDK
+python-dotenv
