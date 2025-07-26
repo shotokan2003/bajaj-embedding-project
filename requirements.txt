@@ -7,3 +7,4 @@ sentence-transformers
 cachetools
 groq      # Official Groq Python SDK
 python-dotenv
+pydantic==1.10.13
