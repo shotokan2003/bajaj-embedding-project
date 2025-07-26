@@ -10,3 +10,6 @@ openai
 redis
 requests
 tqdm
+python-dotenv
+rank-bm25
+scikit-learn

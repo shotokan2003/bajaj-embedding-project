@@ -112,14 +112,39 @@ def extract_page_text(doc: fitz.Document, page_num: int) -> Tuple[str, List[str]
         
     return page_text, tables
 
-def chunk_text(text: str, meta: dict, chunk_size: int = 1000) -> tuple[list[str], list[str]]:
+def chunk_text(text: str, meta: dict, chunk_size: int = 800) -> tuple[list[str], list[str]]:
     """
     Splits text into semantic chunks (paragraphs, sections) up to chunk_size words.
     Returns chunks and their references.
+    
+    Uses smaller chunk size (800 vs 1000) and better boundary detection to improve retrieval accuracy.
     """
-    # Split by semantic boundaries
-    # Look for section markers, paragraphs, page breaks etc.
-    semantic_splits = re.split(r'(?:\n\n+|---|^#{1,3}\s+|\[TABLE.*?\])', text)
+    # First, identify key insurance policy sections to preserve intact
+    critical_policy_sections = {
+        "grace period": r'(?i)(\bgrace period\b.*?(?:\.|$)(?:[^\n]*\n?){0,3})',
+        "waiting period": r'(?i)(\bwaiting period\b.*?(?:\.|$)(?:[^\n]*\n?){0,3})',
+        "pre-existing": r'(?i)(\bpre-existing disease.*?(?:\.|$)(?:[^\n]*\n?){0,3})',
+        "maternity": r'(?i)(\bmaternity.*?(?:\.|$)(?:[^\n]*\n?){0,3})',
+        "ayush": r'(?i)(\bayush.*?(?:\.|$)(?:[^\n]*\n?){0,3})',
+        "room rent": r'(?i)(\broom rent.*?(?:\.|$)(?:[^\n]*\n?){0,3})',
+        "renewal": r'(?i)(\brenewal.*?(?:\.|$)(?:[^\n]*\n?){0,3})',
+    }
+    
+    # Extract and save critical sections to ensure they're preserved
+    preserved_sections = []
+    for topic, pattern in critical_policy_sections.items():
+        matches = re.findall(pattern, text)
+        for match in matches:
+            if len(match) > 20:  # Only preserve non-trivial matches
+                preserved_sections.append((match, topic))
+    
+    # Split by semantic boundaries with improved pattern
+    # Include section headers, page markers, paragraph breaks, bullet points
+    semantic_splits = re.split(
+        r'(?:\n\n+|---|^#{1,3}\s+|\[TABLE.*?\]|\n\d+\.\s+|\n[A-Z]\.\s+|\n•\s+)',
+        text
+    )
+    
     chunks = []
     refs = []
     
@@ -127,7 +152,7 @@ def chunk_text(text: str, meta: dict, chunk_size: int = 1000) -> tuple[list[str]
     current_chunk_size = 0
     current_ref = ""
     page_refs = meta.get("page_refs", [])
-    
+      
     for split in semantic_splits:
         split = split.strip()
         if not split:
@@ -160,5 +185,23 @@ def chunk_text(text: str, meta: dict, chunk_size: int = 1000) -> tuple[list[str]
     if current_chunk:
         chunks.append(" ".join(current_chunk))
         refs.append(current_ref)
+    
+    # Now add the preserved critical sections as additional chunks
+    # This ensures important policy clauses appear in their own chunks for better retrieval
+    for section_text, topic in preserved_sections:
+        # Find page reference for this section
+        for cutoff, page in page_refs:
+            if text.find(section_text) < cutoff:
+                ref = page
+                break
+        else:
+            ref = ""
+        
+        # Only add if not a duplicate (exact match) of an existing chunk
+        if section_text not in chunks:
+            # Add context around section for better understanding
+            enriched_section = f"Policy section about {topic}: {section_text}"
+            chunks.append(enriched_section)
+            refs.append(ref)
     
     return chunks, refs

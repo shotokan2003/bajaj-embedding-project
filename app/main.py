@@ -8,6 +8,14 @@ from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel
 from app.pipeline import process_document_and_answer
 import os
+import logging
+import time
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+)
 
 app = FastAPI(title="HackRx LLM Query API")
 security = HTTPBearer()
@@ -34,8 +42,22 @@ async def hackrx_run(
     """
     Main endpoint: Accepts a document URL and questions, returns answers.
     """
+    start_time = time.time()
+    logging.info(f"Received request with {len(req.questions)} questions")
+    
     try:
         answers = await process_document_and_answer(req.documents, req.questions)
+        elapsed = time.time() - start_time
+        logging.info(f"Request processed in {elapsed:.2f} seconds")
         return {"answers": answers}
     except Exception as e:
+        logging.error(f"Error processing request: {str(e)}", exc_info=True)
         raise HTTPException(status_code=400, detail=str(e))
+
+@app.on_event("startup")
+async def startup_event():
+    """Run tasks when the API starts"""
+    # Clear stale cache entries to prevent disk bloat
+    from app.cache import clear_stale_cache
+    removed = clear_stale_cache(max_age_days=7)
+    logging.info(f"Cleared {removed} stale cache entries")
