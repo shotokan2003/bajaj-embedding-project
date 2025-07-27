@@ -1,12 +1,22 @@
 from fastapi import FastAPI
-from app.api import router, alt_router
+from fastapi.middleware.cors import CORSMiddleware
+from app.api import router
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 import os
 
 app = FastAPI(title="Real-Time QA with Embeddings and Pinecone")
-app.include_router(router, prefix="/api/v1/hackrx")
-app.include_router(alt_router)  # No prefix, so /hackrx/run is available
+
+# Add CORS middleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # Allows all origins
+    allow_credentials=True,
+    allow_methods=["*"],  # Allows all methods
+    allow_headers=["*"],  # Allows all headers
+)
+
+app.include_router(router, prefix="/hackrx")
 
 # Mount static directory
 app.mount("/static", StaticFiles(directory="static"), name="static")
@@ -18,4 +28,8 @@ def serve_frontend():
 
 @app.get("/")
 def root():
-    return {"message": "Welcome! Use /api/v1/hackrx/upload to upload documents or /docs for API documentation."}
+    return {"message": "Welcome! Use /hackrx/run to process documents and answer questions or /docs for API documentation."}
+
+@app.get("/test")
+def test_endpoint():
+    return {"status": "API is working", "message": "Server is running correctly"}
