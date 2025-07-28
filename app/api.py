@@ -102,7 +102,7 @@ async def hackrx_run(
         
         # Process the document URL
         doc_id = str(uuid.uuid4())
-        chunks = await download_and_chunk(payload.documents)
+        chunks = await download_and_chunk(payload.documents, max_tokens=500)
         
         # Create embeddings and store in Pinecone
         all_chunks = {}
@@ -122,7 +122,7 @@ async def hackrx_run(
                 continue
             
             emb = get_embedding_cached(question)
-            top_chunks = query_pinecone(emb, top_k=3, filter_doc_id=doc_id)
+            top_chunks = query_pinecone(emb, top_k=5, filter_doc_id=doc_id)
             answer = generate_answer_from_chunks(question, top_chunks)
             answer_cache[question] = answer
             answers.append(answer)
@@ -139,7 +139,7 @@ async def local_processing_run(payload: DocumentQARequest):
     try:
         # Step 1: Download and process the document
         print(f"Processing document from URL: {payload.documents}")
-        chunks = await download_and_chunk(payload.documents)
+        chunks = await download_and_chunk(payload.documents, max_tokens=500)
         print(f"Extracted {len(chunks)} chunks from document")
         
         # Step 2: Create local embeddings using sentence-transformers
@@ -164,7 +164,7 @@ async def local_processing_run(payload: DocumentQARequest):
                 import numpy as np
                 similarity = np.dot(question_embedding, chunk_embedding) / (np.linalg.norm(question_embedding) * np.linalg.norm(chunk_embedding))
                 
-                if len(best_scores) < 3:
+                if len(best_scores) < 5:
                     best_scores.append(similarity)
                     best_chunks.append(chunk)
                 elif similarity > min(best_scores):

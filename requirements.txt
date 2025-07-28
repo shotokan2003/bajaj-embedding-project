@@ -9,3 +9,5 @@ groq      # Official Groq Python SDK
 python-dotenv
 pydantic
 numpy
+coredis>=5.0.1
+hiredis
