@@ -1,0 +1,9 @@
+fastapi
+uvicorn[standard]
+requests
+PyPDF2
+python-docx
+extract-msg
+fastembed>=0.1.5
+qdrant-client>=1.8.0
+gorq-llm
