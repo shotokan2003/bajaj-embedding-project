@@ -1,62 +1,119 @@
-# app/llm_answer.py
 import os
+import asyncio
+import json
+import re
 from groq import Groq
 
-# Initialize Groq client with API key from environment variable
-_groq = Groq(api_key=os.getenv("GROQ_API_KEY"))  # Make sure GROQ_API_KEY is set in your environment
+# Initialize Groq client
+_groq = Groq(api_key=os.getenv("GROQ_API_KEY"))
 
-def extract_answers(question, top_chunks):
+FEW_SHOT_EXAMPLES = """
+Example 1:
+Q: What is the grace period for premium payment?
+A: A grace period of 30 (thirty) days is allowed for premium payment after the due date to avoid policy lapse.
+
+Example 2:
+Q: Does this policy cover maternity expenses?
+A: Yes, maternity expenses are covered if the insured has 24 (twenty-four) months continuous coverage, limited to two deliveries or terminations.
+"""
+
+def clean_and_parse_llm_output(text):
     """
-    Given a question and top retrieved text chunks, call Groq LLM to generate answer & rationale
-    :param question: str
-    :param top_chunks: List[Dict] with text chunks and metadata
-    :return: (answer: str, rationale: str)
+    Remove markdown code fences and parse JSON answers from the LLM output.
+    Return a list containing only the answer strings.
     """
-    # Concatenate texts for context feeding into LLM
-    context = "\n\n".join([c["text"] for c in top_chunks])
-    
-    # Construct the carefully designed prompt as requested
-    prompt = (
-        "Answer the insurance policy question using ONLY the provided document excerpts. "
-        "YOUR ANSWER MUST BE A SINGLE, COMPLETE SENTENCE, MAXIMUM 25-30 WORDS, NEVER JUST 'YES', 'NO', OR A FRAGMENT. "
-        "If the answer is 'yes' or 'no', ALWAYS provide a brief explanation in the same sentence. "
-        "DO NOT use phrases like 'According to the document', 'Based on', or 'The policy states'. "
-        "NEVER say 'not specified' if information exists in the document. "
-        "STATE FACTS DIRECTLY using the exact numbers, durations, limits and conditions. "
-        "Format numbers both as digits and words in parentheses: e.g. '30 (thirty)' days. "
-        "Avoid connectors like 'additionally', 'furthermore', 'moreover'. "
-        "DO NOT leave the answer incomplete or cut off.\n\n"
-        "EXAMPLES:\n"
-        "Question: What is the waiting period for pre-existing diseases?\n"
-        "BAD: According to the document, pre-existing diseases have a waiting period of 36 months from policy inception.\n"
-        "GOOD: Pre-existing diseases have a waiting period of 36 (thirty-six) months from policy inception.\n\n"
-        "Question: Is there a grace period for premium payment?\n"
-        "BAD: There is no grace period.\n"
-        "GOOD: A grace period of 30 (thirty) days is provided for premium payment after the due date to renew or continue the policy without losing continuity benefits.\n\n"
-        "Question: Does the policy cover maternity expenses?\n"
-        "BAD: The policy mentions coverage for maternity expenses subject to certain conditions like continuous coverage.\n"
-        "GOOD: Yes, maternity expenses are covered for female insured with 24 (twenty-four) months continuous coverage.\n\n"
-        "Question: How are day care procedures handled?\n"
-        "BAD: The policy provides coverage for various day care procedures that don't require 24 hours hospitalization, as mentioned in the policy documents.\n"
-        "GOOD: Day care procedures not requiring 24-hour hospitalization are covered as specified in the policy annexure.\n\n"
-        "CONTEXT:\n" + context + "\n\n"
-        "QUESTION: " + question + "\n"
-        "ANSWER:"
-    )
-    
-    # Call Groq chat completion API
-    completion = _groq.chat.completions.create(
-        model="llama-3.1-8b-instant",  # Replace with your valid model if different
-        messages=[{"role": "user", "content": prompt}],
-        max_tokens=256,
-        temperature=0.1
-    )
-    
-    answer_text = completion.choices[0].message.content
-    
-    # Optionally: split answer and rationale if model outputs both
-    parts = answer_text.split("Rationale:", 1)
-    answer = parts[0].strip()
-    rationale = parts[1].strip() if len(parts) > 1 else "Rationale included in answer text."
-    
-    return answer, rationale
+    # Remove markdown code block fences (``````json etc)
+    cleaned = re.sub(r"``````+", "", text, flags=re.DOTALL).strip()
+
+    try:
+        data = json.loads(cleaned)
+
+        if isinstance(data, list):
+            answers = []
+            for item in data:
+                if isinstance(item, dict) and "answer" in item:
+                    answers.append(item["answer"])
+                else:
+                    answers.append(str(item))
+            return answers
+        else:
+            return [text.strip()]
+
+    except json.JSONDecodeError as e:
+        print(f"JSON parse error in LLM output: {e}")
+        return [text.strip()]
+
+async def batch_extract_answers_with_retry(questions, context, max_retries=3):
+    """
+    Batch all questions and submit to Groq LLM with retries on rate-limiting.
+
+    Returns:
+        List[str]: List of answer strings in order corresponding to questions
+    """
+    questions_text = "\n".join([f"{i + 1}. {q}" for i, q in enumerate(questions)])
+
+    prompt = f"""
+You are a precise and reliable insurance policy assistant.
+
+Answer the questions ONLY using the information provided in the CONTEXT.
+If the information is not present, respond with: "Not specified in the provided context."
+
+Answer each question in a concise, complete sentence, 25-30 words max.
+Use exact numerical values and terms from the CONTEXT.
+
+Do NOT use vague language or fillers like "according to the document."
+
+Provide your answers as a JSON array of objects with "question" and "answer" fields matching the question order.
+
+Here are a few examples:
+
+{FEW_SHOT_EXAMPLES}
+
+---
+
+CONTEXT:
+{context}
+
+QUESTIONS:
+{questions_text}
+
+Respond ONLY with the JSON array of answers.
+"""
+
+    retries = 0
+    wait_time = 1.0  # seconds
+
+    while True:
+        try:
+            completion = _groq.chat.completions.create(
+                model="llama-3.1-8b-instant",
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=512,
+                temperature=0.1,
+            )
+
+            choice = completion.choices[0]
+            if isinstance(choice, dict) and "message" in choice:
+                answer_text = choice["message"]["content"]
+            elif hasattr(choice, "message") and hasattr(choice.message, "content"):
+                answer_text = choice.message.content
+            elif isinstance(choice, dict) and "text" in choice:
+                answer_text = choice["text"]
+            else:
+                answer_text = str(choice)
+
+            answers = clean_and_parse_llm_output(answer_text)
+
+            if len(answers) != len(questions):
+                print("WARNING: Number of answers differs from number of questions.")
+
+            return answers
+
+        except Exception as e:
+            if ("rate_limit" in str(e).lower() or "429" in str(e)) and retries < max_retries:
+                print(f"Rate limit hit. Retrying in {wait_time}s (attempt {retries + 1} of {max_retries})...")
+                await asyncio.sleep(wait_time)
+                wait_time *= 2
+                retries += 1
+            else:
+                raise e
