@@ -4,7 +4,6 @@ import json
 import re
 from groq import Groq
 
-# Initialize Groq client
 _groq = Groq(api_key=os.getenv("GROQ_API_KEY"))
 
 FEW_SHOT_EXAMPLES = """
@@ -19,10 +18,9 @@ A: Yes, maternity expenses are covered if the insured has 24 (twenty-four) month
 
 def clean_and_parse_llm_output(text):
     """
-    Remove markdown code fences and parse JSON answers from the LLM output.
-    Return a list containing only the answer strings.
+    Remove markdown fences and parse JSON answers from LLM output.
+    Returns list of answer strings.
     """
-    # Remove markdown code block fences (``````json etc)
     cleaned = re.sub(r"``````+", "", text, flags=re.DOTALL).strip()
 
     try:
@@ -44,13 +42,7 @@ def clean_and_parse_llm_output(text):
         return [text.strip()]
 
 async def batch_extract_answers_with_retry(questions, context, max_retries=3):
-    """
-    Batch all questions and submit to Groq LLM with retries on rate-limiting.
-
-    Returns:
-        List[str]: List of answer strings in order corresponding to questions
-    """
-    questions_text = "\n".join([f"{i + 1}. {q}" for i, q in enumerate(questions)])
+    questions_text = "\n".join([f"{i+1}. {q}" for i, q in enumerate(questions)])
 
     prompt = f"""
 You are a precise and reliable insurance policy assistant.
@@ -58,18 +50,16 @@ You are a precise and reliable insurance policy assistant.
 Answer the questions ONLY using the information provided in the CONTEXT.
 If the information is not present, respond with: "Not specified in the provided context."
 
-Answer each question in a concise, complete sentence, 25-30 words max.
+Answer each question in concise, complete sentences of 25-30 words max.
 Use exact numerical values and terms from the CONTEXT.
 
-Do NOT use vague language or fillers like "according to the document."
+Avoid fillers and vague language.
 
-Provide your answers as a JSON array of objects with "question" and "answer" fields matching the question order.
+Respond ONLY with a JSON array of objects with "question" and "answer" fields matching question order.
 
 Here are a few examples:
 
 {FEW_SHOT_EXAMPLES}
-
----
 
 CONTEXT:
 {context}
@@ -81,7 +71,7 @@ Respond ONLY with the JSON array of answers.
 """
 
     retries = 0
-    wait_time = 1.0  # seconds
+    wait_time = 1.0
 
     while True:
         try:
@@ -92,7 +82,7 @@ Respond ONLY with the JSON array of answers.
                 temperature=0.1,
             )
 
-            choice = completion.choices[0]
+            choice = completion.choices
             if isinstance(choice, dict) and "message" in choice:
                 answer_text = choice["message"]["content"]
             elif hasattr(choice, "message") and hasattr(choice.message, "content"):
@@ -105,13 +95,13 @@ Respond ONLY with the JSON array of answers.
             answers = clean_and_parse_llm_output(answer_text)
 
             if len(answers) != len(questions):
-                print("WARNING: Number of answers differs from number of questions.")
+                print("WARNING: number of answers differs from number of questions.")
 
             return answers
 
         except Exception as e:
             if ("rate_limit" in str(e).lower() or "429" in str(e)) and retries < max_retries:
-                print(f"Rate limit hit. Retrying in {wait_time}s (attempt {retries + 1} of {max_retries})...")
+                print(f"Rate limit hit; retrying in {wait_time}s (attempt {retries+1} of {max_retries})...")
                 await asyncio.sleep(wait_time)
                 wait_time *= 2
                 retries += 1

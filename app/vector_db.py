@@ -7,12 +7,13 @@ def collection_exists(collection_name):
     return _qdrant_client.collection_exists(collection_name)
 
 def upsert_documents(collection_name, doc_chunks, embeddings):
-    vector_size = len(embeddings)
+    vector_size = len(embeddings[0])
+    # Always delete and recreate (safe for idempotency)
     if _qdrant_client.collection_exists(collection_name):
         _qdrant_client.delete_collection(collection_name)
     _qdrant_client.recreate_collection(
         collection_name=collection_name,
-        vectors_config=VectorParams(size=vector_size, distance=Distance.COSINE)
+        vectors_config=VectorParams(size=vector_size, distance=Distance.COSINE),
     )
     points = [
         {
@@ -26,6 +27,8 @@ def upsert_documents(collection_name, doc_chunks, embeddings):
         for idx, e in enumerate(embeddings)
     ]
     _qdrant_client.upsert(collection_name=collection_name, points=points)
+
+
 
 def semantic_search(collection_name, query_vector, top_k=3):
     results = _qdrant_client.search(
