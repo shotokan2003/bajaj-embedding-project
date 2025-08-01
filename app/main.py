@@ -7,6 +7,7 @@ from fastapi import FastAPI, HTTPException, Request, Depends
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel
 from app.pipeline import process_document_and_answer
+from contextlib import asynccontextmanager
 import os
 import logging
 import time
@@ -17,7 +18,16 @@ logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
 
-app = FastAPI(title="HackRx LLM Query API")
+# Define lifespan for startup/shutdown events
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Clear stale cache entries on startup
+    from app.cache import clear_stale_cache
+    removed = clear_stale_cache(max_age_days=7)
+    logging.info(f"Cleared {removed} stale cache entries")
+    yield
+
+app = FastAPI(title="HackRx LLM Query API", lifespan=lifespan)
 security = HTTPBearer()
 
 # Dummy token for hackathon; replace with env/config in prod
@@ -54,10 +64,7 @@ async def hackrx_run(
         logging.error(f"Error processing request: {str(e)}", exc_info=True)
         raise HTTPException(status_code=400, detail=str(e))
 
-@app.on_event("startup")
-async def startup_event():
-    """Run tasks when the API starts"""
-    # Clear stale cache entries to prevent disk bloat
-    from app.cache import clear_stale_cache
-    removed = clear_stale_cache(max_age_days=7)
-    logging.info(f"Cleared {removed} stale cache entries")
+if __name__ == "__main__":
+    import uvicorn
+    # Run the FastAPI app with Uvicorn
+    uvicorn.run("app.main:app", host="localhost", port=int(os.getenv("PORT", 8000)), reload=True)

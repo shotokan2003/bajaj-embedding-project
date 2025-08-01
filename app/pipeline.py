@@ -164,7 +164,8 @@ async def process_document_and_answer(doc_url: str, questions: list[str]) -> lis
         
         # Process each question
         for i, q in questions_to_process:
-            task = retrieve_similar_chunks_async(doc_id, q, chunks, chunk_refs)
+            # Pass embeddings for cosine-based retrieval
+            task = retrieve_similar_chunks_async(doc_id, q, chunks, chunk_refs, embeddings)
             retrieval_tasks.append((i, q, task))
         
         # Wait for all retrieval tasks
