@@ -1,6 +1,6 @@
 venv
 *.pyc
 cache
-chromadb_data
 .env
 ashish
+chromadb_data

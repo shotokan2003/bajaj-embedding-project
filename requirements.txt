@@ -2,7 +2,6 @@ fastapi
 uvicorn
 python-multipart
 pydantic
-chromadb==0.4.22
 pymupdf
 python-docx
 openai

@@ -1,8 +1,8 @@
 """
-NumPy 2.0+ compatibility patch for ChromaDB
+NumPy 2.0+ compatibility patch
 
-This patch adds backward compatibility for libraries (like ChromaDB)
-that still use np.float_ which was removed in NumPy 2.0
+This patch adds backward compatibility for libraries that still use 
+deprecated NumPy attributes like np.float_ which was removed in NumPy 2.0
 """
 
 import sys
