@@ -114,6 +114,7 @@ def encode(texts: List[str], batch_size: int = 16, show_progress_bar: bool = Fal
     """
     Encode a list of texts to get embeddings with parallel processing.
     This method mimics the interface of SentenceTransformer.encode().
+    Optimized for performance with chunked batching and thread pool.
     
     Args:
         texts: List of texts to encode
@@ -126,23 +127,48 @@ def encode(texts: List[str], batch_size: int = 16, show_progress_bar: bool = Fal
     if not texts:
         return np.array([])
     
-    # Optimize batch size based on number of texts
-    if len(texts) <= 4:
-        # For small batches, process sequentially
-        embeddings = [get_embedding_cached(text) for text in texts]
-        return np.array(embeddings)
+    # Deduplicate texts to avoid redundant API calls
+    unique_texts = list(set(texts))
+    text_to_idx = {text: i for i, text in enumerate(texts)}
+    idx_to_unique_idx = {i: unique_texts.index(text) for i, text in enumerate(texts)}
     
-    # Use thread pool for parallel processing
-    num_workers = min(batch_size, 32)  # Cap at 32 threads
+    # Check if all are in cache already
+    all_hashes = [_hash_text(text) for text in unique_texts]
+    all_cached = True
     
-    # Process texts in parallel using thread pool
-    with concurrent.futures.ThreadPoolExecutor(max_workers=num_workers) as executor:
-        if show_progress_bar:
-            logger.info(f"Processing {len(texts)} texts with {num_workers} workers")
+    with _cache_lock:
+        for text_hash in all_hashes:
+            if text_hash not in _embedding_cache:
+                all_cached = False
+                break
+    
+    if all_cached:
+        # If all are cached, retrieve them from cache
+        with _cache_lock:
+            unique_embeddings = [_embedding_cache[_hash_text(text)] for text in unique_texts]
         
-        embeddings = list(executor.map(get_embedding_cached, texts))
-        
-        if show_progress_bar:
-            logger.info(f"Completed embedding {len(texts)} texts")
+        # Map back to original order
+        final_embeddings = [unique_embeddings[idx_to_unique_idx[i]] for i in range(len(texts))]
+        return np.array(final_embeddings)
     
-    return np.array(embeddings)
+    # For very small batches, process sequentially to avoid thread overhead
+    if len(unique_texts) <= 4:
+        unique_embeddings = [get_embedding_cached(text) for text in unique_texts]
+    else:
+        # Use thread pool for parallel processing with optimal worker count
+        # More workers for larger batches, but cap based on CPU count
+        num_workers = min(max(batch_size, 8), os.cpu_count() * 2 or 16)
+        
+        # Process texts in parallel using thread pool
+        with concurrent.futures.ThreadPoolExecutor(max_workers=num_workers) as executor:
+            if show_progress_bar:
+                logger.info(f"Processing {len(unique_texts)} texts with {num_workers} workers")
+            
+            unique_embeddings = list(executor.map(get_embedding_cached, unique_texts))
+            
+            if show_progress_bar:
+                logger.info(f"Completed embedding {len(unique_texts)} texts")
+    
+    # Map unique embeddings back to original texts
+    final_embeddings = [unique_embeddings[idx_to_unique_idx[i]] for i in range(len(texts))]
+    return np.array(final_embeddings)

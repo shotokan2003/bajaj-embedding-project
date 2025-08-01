@@ -118,6 +118,25 @@ async def process_document_and_answer(doc_url: str, questions: list[str]) -> lis
     logger.info(f"Processing document: {doc_url}")
     logger.info(f"Number of questions: {len(questions)}")
     
+    # Check cache for all questions before doing any processing
+    cached_answers = {}
+    questions_to_process = []
+    
+    # Early cache check - this can save significant time
+    for i, q in enumerate(questions):
+        cached = get_cached_answer(doc_url, q)
+        if cached:
+            cached_answers[i] = cached
+        else:
+            questions_to_process.append((i, q))
+    
+    # If all answers are cached, we can skip document processing entirely
+    if len(cached_answers) == len(questions):
+        logger.info(f"All answers found in cache. Skipping document processing.")
+        return [cached_answers[i] for i in range(len(questions))]
+    
+    logger.info(f"Cache hits: {len(cached_answers)}/{len(questions)}")
+    
     # Step 1: Download and parse document (PDF/DOCX) - async with caching
     text, meta = await download_and_parse_document(doc_url)
     if not text:
@@ -125,8 +144,9 @@ async def process_document_and_answer(doc_url: str, questions: list[str]) -> lis
     logger.info(f"Document parsed in {time.time() - start_time:.2f}s")
     
     # Step 2: Chunk text - optimized for semantic boundaries
+    chunk_start = time.time()
     chunks, chunk_refs = chunk_text(text, meta)
-    logger.info(f"Document chunked into {len(chunks)} segments")
+    logger.info(f"Document chunked into {len(chunks)} segments in {time.time() - chunk_start:.2f}s")
     
     # Step 3: Get or create embeddings and store in ChromaDB
     embedding_start = time.time()
@@ -135,26 +155,9 @@ async def process_document_and_answer(doc_url: str, questions: list[str]) -> lis
     
     # Step 4: For each question, process in parallel
     query_start = time.time()
-    
-    # First, check cache for all questions
-    cached_answers = {}
-    questions_to_process = []
-    
-    for i, q in enumerate(questions):
-        cached = get_cached_answer(doc_url, q)
-        if cached:
-            cached_answers[i] = cached
-        else:
-            questions_to_process.append((i, q))
-    
-    logger.info(f"Cache hits: {len(cached_answers)}/{len(questions)}")
-    
-    # Process remaining questions in parallel
-    if questions_to_process:        # Step 1: Retrieve contexts for all questions in parallel
-        retrieval_tasks = []
-        
-        # Create auxiliary keyword-only searches for critical policy terms
-        # These help ensure we don't miss important clauses that might not have high vector similarity
+      # Process remaining questions in parallel
+    if questions_to_process:
+        # Step 1: Define critical terms mapping once (outside the loop)
         critical_terms = {
             "grace period": ["grace period", "renewal", "premium payment", "due date", "continuity", "policy period"],
             "waiting period": ["waiting period", "pre-existing", "diseases", "coverage"],
@@ -162,50 +165,65 @@ async def process_document_and_answer(doc_url: str, questions: list[str]) -> lis
             "ayush": ["ayush", "ayurveda", "yoga", "naturopathy", "unani", "siddha", "homeopathy"]
         }
         
-        # Process each question
+        # Precompute keyword matches for chunks to speed up supplemental searches
+        chunk_keyword_index = {}
+        for keyword_set in critical_terms.values():
+            for keyword in keyword_set:
+                chunk_keyword_index[keyword] = [
+                    idx for idx, chunk in enumerate(chunks) 
+                    if keyword.lower() in chunk.lower()
+                ]
+        
+        # Gather all retrieval tasks at once
+        retrieval_tasks = []
         for i, q in questions_to_process:
             # Pass embeddings for cosine-based retrieval
             task = retrieve_similar_chunks_async(doc_id, q, chunks, chunk_refs, embeddings)
             retrieval_tasks.append((i, q, task))
         
-        # Wait for all retrieval tasks
-        context_results = {}
+        # Execute all retrieval tasks in parallel (gather)
+        retrieval_results = await asyncio.gather(*[task for _, _, task in retrieval_tasks])
         
-        # Process all retrieval results
-        for i, q, task in retrieval_tasks:
-            top_chunks, top_refs = await task
-            
-            # For questions about critical policy terms, ensure we have comprehensive coverage
+        # Process retrieval results and prepare for LLM generation
+        context_results = {}
+        for (i, q, _), (top_chunks, top_refs) in zip(retrieval_tasks, retrieval_results):
+            # Add critical term chunks if needed
             q_lower = q.lower()
             for term, keywords in critical_terms.items():
-                if any(k in q_lower for k in keywords[:2]):  # If question is about this critical term
-                    # Perform additional targeted searches in the document text
-                    found_term = False
+                if any(k in q_lower for k in keywords[:2]):
+                    # Find already matched chunks to avoid duplicates
+                    matched_chunks = set(top_chunks)
                     for keyword in keywords:
-                        for idx, chunk in enumerate(chunks):
-                            if keyword in chunk.lower() and chunk not in top_chunks:
-                                # We found a chunk with the critical term that wasn't in our results
-                                # Add it to ensure comprehensive coverage
-                                top_chunks.append(chunk)
-                                top_refs.append(chunk_refs[idx] if idx < len(chunk_refs) else "")
-                                found_term = True
-                                # Limit the number of extra chunks we add
-                                if len(top_chunks) >= 8:  # Don't exceed reasonable context size
-                                    break
-                        if found_term and len(top_chunks) >= 8:
+                        if keyword in chunk_keyword_index:
+                            for idx in chunk_keyword_index[keyword]:
+                                chunk = chunks[idx]
+                                if chunk not in matched_chunks:
+                                    top_chunks.append(chunk)
+                                    top_refs.append(chunk_refs[idx] if idx < len(chunk_refs) else "")
+                                    matched_chunks.add(chunk)
+                                    if len(top_chunks) >= 8:
+                                        break
+                        if len(top_chunks) >= 8:
                             break
             
+            # Trim context to ensure reasonable size
+            if len(top_chunks) > 8:
+                top_chunks = top_chunks[:8]
+                top_refs = top_refs[:8]
+                
             context_results[i] = (q, top_chunks, top_refs)
         
-        # Step 2: Generate answers with LLM in parallel
-        llm_tasks = []
-        for i, (q, top_chunks, top_refs) in context_results.items():
-            task = asyncio.create_task(answer_with_llm(q, top_chunks, top_refs))
-            llm_tasks.append((i, q, task))
+        # Generate LLM tasks for all questions at once
+        llm_tasks = [
+            answer_with_llm(q, top_chunks, top_refs)
+            for i, (q, top_chunks, top_refs) in context_results.items()
+        ]
         
-        # Wait for all LLM tasks
-        for i, q, task in llm_tasks:
-            answer = await task
+        # Execute all LLM tasks in parallel
+        llm_results = await asyncio.gather(*llm_tasks)
+        
+        # Process results and update cache
+        for (i, (q, _, _)), answer in zip(context_results.items(), llm_results):
             # Post-process answer for consistent formatting
             answer = post_process_answer(answer)
             cached_answers[i] = answer

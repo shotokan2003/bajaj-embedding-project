@@ -11,5 +11,15 @@
       "src": "/(.*)",
       "dest": "api/index.py"
     }
-  ]
+  ],
+  "functions": {
+    "api/index.py": {
+      "memory": 1024,
+      "maxDuration": 60
+    }
+  },  "env": {
+    "VERCEL": "1",
+    "USE_REDIS": "1",
+    "CEREBRAS_MODEL": "llama-4-scout-17b-16e-instruct"
+  }
 }

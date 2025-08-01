@@ -11,20 +11,27 @@ from typing import List, Dict, Any, Optional
 import logging
 from dotenv import load_dotenv
 
+# Import Cerebras SDK for fast inference
+try:
+    from cerebras.cloud.sdk import Cerebras
+except ImportError:
+    logger.warning("Cerebras SDK not installed. Run: pip install cerebras-cloud-sdk")
+
 load_dotenv()
 
 # Configure logging
 logger = logging.getLogger(__name__)
 
 # LLM configuration
-USE_OLLAMA = os.getenv("USE_OLLAMA", "0") == "1"  # Default to GROQ for reliability
+USE_OLLAMA = os.getenv("USE_OLLAMA", "0") == "1"  # Use Ollama if specified
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434/api/generate")
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "llama3")
 
-# GROQ fallback configuration
-GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
-GROQ_MODEL = os.getenv("GROQ_MODEL", "llama3-8b-8192")
-GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
+# Cerebras configuration - using llama-4-scout-17b for optimal speed and quality
+CEREBRAS_API_KEY = os.getenv("CEREBRAS_API_KEY", "")
+CEREBRAS_MODEL = os.getenv("CEREBRAS_MODEL", "llama-4-scout-17b-16e-instruct") # Fast model with good token limit
+# Enable debug logging for API requests
+DEBUG_API = os.getenv("DEBUG_API", "0") == "1"
 
 # Performance settings
 MAX_RETRIES = 3
@@ -36,45 +43,42 @@ class LLMError(Exception):
     """Error during LLM call"""
     pass
 
-def _groq_completion(prompt: str) -> str:
-    """Call GROQ API with retry logic"""
-    if not GROQ_API_KEY:
-        raise LLMError("GROQ_API_KEY not set")
-        
-    headers = {
-        "Authorization": f"Bearer {GROQ_API_KEY}",
-        "Content-Type": "application/json"
-    }
-    data = {
-        "model": GROQ_MODEL,
-        "messages": [{"role": "user", "content": prompt}],
-        "max_tokens": 150,  # Reduced token limit to enforce brevity
-        "temperature": 0.05,  # Even lower temperature for more deterministic answers
-        "response_format": {"type": "text"},  # Ensure direct text response
-        "top_p": 0.9  # Focus on higher probability tokens
-    }
+def _cerebras_completion(prompt: str) -> str:
+    """Call Cerebras API with retry logic"""
+    if not CEREBRAS_API_KEY:
+        raise LLMError("CEREBRAS_API_KEY not set")
+    
+    # Initialize Cerebras client
+    client = Cerebras(api_key=CEREBRAS_API_KEY)
+    
+    # Log the request if in debug mode
+    if DEBUG_API:
+        logger.info(f"Cerebras API request with prompt: {prompt[:100]}...")
     
     for attempt in range(1, MAX_RETRIES + 1):
         try:
-            resp = requests.post(
-                GROQ_URL, 
-                headers=headers, 
-                json=data,
-                timeout=REQUEST_TIMEOUT
+            # Create the chat completion request
+            chat_completion = client.chat.completions.create(
+                messages=[
+                    {"role": "user", "content": prompt}
+                ],
+                model=CEREBRAS_MODEL,
+                temperature=0.1,
+                max_tokens=150
             )
-            if resp.status_code == 429 and attempt < MAX_RETRIES:
-                wait_time = RETRY_BACKOFF ** attempt
-                logger.warning(f"GROQ rate limit hit, retrying in {wait_time}s")
-                time.sleep(wait_time)
-                continue
+            
+            # Process response
+            return chat_completion.choices[0].message.content.strip()
+            
+        except Exception as e:
+            error_message = f"Cerebras API error: {str(e)}"
                 
-            resp.raise_for_status()
-            return resp.json()["choices"][0]["message"]["content"].strip()
-        except requests.RequestException as e:
             if attempt == MAX_RETRIES:
-                raise LLMError(f"GROQ API error: {str(e)}")
+                logger.error(error_message)
+                raise LLMError(error_message)
+            
             wait_time = RETRY_BACKOFF ** attempt
-            logger.warning(f"GROQ API error: {str(e)}, retrying in {wait_time}s")
+            logger.warning(f"{error_message}, retrying in {wait_time}s")
             time.sleep(wait_time)
     
     raise LLMError("Failed to get response from GROQ API")
@@ -172,7 +176,7 @@ def optimize_prompt(question: str, context_chunks: List[str], refs: List[str]) -
 async def answer_with_llm(question: str, context_chunks: List[str], refs: List[str]) -> str:
     """
     Calls LLM with context and question, returns answer with clause reference.
-    Optimized for performance with parallel processing.
+    Optimized for performance with parallel processing using Cerebras.
     """
     # Create optimized prompt focusing on relevant context
     prompt = optimize_prompt(question, context_chunks, refs)
@@ -185,10 +189,11 @@ async def answer_with_llm(question: str, context_chunks: List[str], refs: List[s
                 return await loop.run_in_executor(executor, _ollama_completion, prompt)
             except LLMError as e:
                 logger.error(f"Ollama error: {str(e)}")
-                # Fall back to GROQ if Ollama fails and GROQ key exists
-                if GROQ_API_KEY:
-                    logger.info("Falling back to GROQ API")
-                    return await loop.run_in_executor(executor, _groq_completion, prompt)
+                # Fall back to Cerebras if Ollama fails and Cerebras key exists
+                if CEREBRAS_API_KEY:
+                    logger.info("Falling back to Cerebras API")
+                    return await loop.run_in_executor(executor, _cerebras_completion, prompt)
                 raise
         else:
-            return await loop.run_in_executor(executor, _groq_completion, prompt)
+            # Use Cerebras as the primary LLM
+            return await loop.run_in_executor(executor, _cerebras_completion, prompt)

@@ -26,16 +26,39 @@ A high-performance, modular FastAPI backend for LLM-powered document Q&A with ve
 - `HACKRX_API_TOKEN` (default: supersecrettoken)
 - `OPENAI_API_KEY` (for GPT-4o)
 - `GOOGLE_API_KEY` (for embedding API)
-- `GROQ_API_KEY` (for fast LLM responses)
+- `CEREBRAS_API_KEY` (for fast LLM responses)
+- `CEREBRAS_MODEL` (default: llama-4-scout-17b-16e-instruct)
 - `USE_OLLAMA` (set to 1 for local Llama3)
 - `USE_REDIS` (set to 1 to enable Redis caching)
 
 ## Vercel Deployment
 This project is optimized for serverless deployment on Vercel:
 
-1. Remove heavy ML dependencies by using Google's embedding API instead of local models
-2. Optimize package size to meet Vercel's 50MB limit
-3. Structure API endpoints according to Vercel's serverless function pattern
+1. Set up environment variables in Vercel:
+   - `VERCEL=1`
+   - `USE_REDIS=1`
+   - `GOOGLE_API_KEY`
+   - `CEREBRAS_API_KEY`
+   - `CEREBRAS_MODEL`
+   - `REDIS_URL` (optional but recommended)
+   - `HACKRX_API_TOKEN`
+
+2. Deploy to Vercel:
+   ```bash
+   vercel
+   ```
+
+3. For production deployment:
+   ```bash
+   vercel --prod
+   ```
+
+4. Performance optimizations for Vercel:
+   - Uses in-memory ChromaDB when on Vercel
+   - Implements Redis caching when available
+   - Falls back to in-memory cache when Redis not available
+   - Parallel processing for document retrieval and LLM generation
+   - Response time optimized to under 20 seconds
 
 ## Testing Gemini Embeddings
 To verify the Google Gemini embedding API integration:

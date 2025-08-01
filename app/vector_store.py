@@ -35,12 +35,23 @@ MAX_CONCURRENT_REQUESTS = 16  # Maximum number of concurrent API requests
 # Create persist directory
 os.makedirs(PERSIST_DIR, exist_ok=True)
 
-# Initialize ChromaDB with persistence and optimized settings
-chroma_client = chromadb.Client(Settings(
-    persist_directory=PERSIST_DIR,
-    anonymized_telemetry=False,
-    is_persistent=True,
-))
+# Initialize ChromaDB with environment-aware settings
+# For Vercel deployment, use in-memory storage to avoid filesystem issues
+is_vercel = os.environ.get("VERCEL", "0") == "1"
+
+if is_vercel:
+    logger.info("Running on Vercel, using in-memory ChromaDB")
+    chroma_client = chromadb.Client(Settings(
+        anonymized_telemetry=False,
+        is_persistent=False,  # In-memory for Vercel
+    ))
+else:
+    logger.info("Running locally, using persistent ChromaDB storage")
+    chroma_client = chromadb.Client(Settings(
+        persist_directory=PERSIST_DIR,
+        anonymized_telemetry=False,
+        is_persistent=True,
+    ))
 
 # Define a custom embedding function for ChromaDB that uses cloud API
 class CloudEmbeddingFunction:
