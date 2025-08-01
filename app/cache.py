@@ -11,6 +11,10 @@ from functools import lru_cache
 from typing import Dict, Any, Optional, Tuple
 import numpy as np
 
+# Fix for NumPy 2.0+: ensure we use float64 instead of float_
+if hasattr(np, 'float_'):
+    np.float64 = np.float_
+
 # Cache settings
 CACHE_DIR = os.path.join(os.path.dirname(__file__), "../cache")
 EMBEDDING_CACHE_DIR = os.path.join(CACHE_DIR, "embeddings")

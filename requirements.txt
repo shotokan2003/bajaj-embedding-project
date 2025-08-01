@@ -2,8 +2,7 @@ fastapi
 uvicorn
 python-multipart
 pydantic
-sentence-transformers
-chromadb
+chromadb==0.4.22
 pymupdf
 python-docx
 openai
@@ -11,5 +10,6 @@ redis
 requests
 tqdm
 python-dotenv
-rank-bm25
 scikit-learn
+tenacity
+google-generativeai>=0.3.0
