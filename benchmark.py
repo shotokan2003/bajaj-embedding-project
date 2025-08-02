@@ -15,7 +15,7 @@ load_dotenv()
 
 # Configuration
 BASE_URL = os.getenv("API_URL", "http://localhost:8000")
-API_TOKEN = os.getenv("HACKRX_API_TOKEN", "supersecrettoken")
+# API_TOKEN = os.getenv("HACKRX_API_TOKEN", "supersecrettoken")
 TEST_DOC_URL = "https://example.com/sample_insurance_policy.pdf"  # Change to your test document URL
 
 # Test questions
@@ -33,7 +33,7 @@ def run_benchmark(num_runs=3):
     all_times = []
     
     headers = {
-        "Authorization": f"Bearer {API_TOKEN}",
+        # "Authorization": f"Bearer {API_TOKEN}",
         "Content-Type": "application/json"
     }
     

@@ -28,10 +28,10 @@ async def lifespan(app: FastAPI):
     yield
 
 app = FastAPI(title="HackRx LLM Query API", lifespan=lifespan)
-security = HTTPBearer()
+# security = HTTPBearer()
 
 # Dummy token for hackathon; replace with env/config in prod
-API_TOKEN = os.getenv("HACKRX_API_TOKEN", "supersecrettoken")
+# API_TOKEN = os.getenv("HACKRX_API_TOKEN", "supersecrettoken")
 
 class QueryRequest(BaseModel):
     documents: str
@@ -40,14 +40,14 @@ class QueryRequest(BaseModel):
 class QueryResponse(BaseModel):
     answers: list[str]
 
-def verify_token(credentials: HTTPAuthorizationCredentials = Depends(security)):
-    if credentials.credentials != API_TOKEN:
-        raise HTTPException(status_code=401, detail="Invalid or missing token.")
+# def verify_token(credentials: HTTPAuthorizationCredentials = Depends(security)):
+#     if credentials.credentials != API_TOKEN:
+#         raise HTTPException(status_code=401, detail="Invalid or missing token.")
 
 @app.post("/hackrx/run", response_model=QueryResponse)
 async def hackrx_run(
     req: QueryRequest,
-    credentials: HTTPAuthorizationCredentials = Depends(verify_token)
+    # credentials: HTTPAuthorizationCredentials = Depends(verify_token)
 ):
     """
     Main endpoint: Accepts a document URL and questions, returns answers.
