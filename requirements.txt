@@ -9,8 +9,8 @@ redis>=4.5.0
 requests
 tqdm
 python-dotenv
-scikit-learn
 tenacity
 google-generativeai>=0.3.0
 cerebras-cloud-sdk
 gunicorn
+numpy

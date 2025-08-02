@@ -1,6 +1,8 @@
 venv
 *.pyc
+__pycache__/
 cache
 .env
+.env.local
 ashish
-chromadb_data
+temp.*

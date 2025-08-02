@@ -14,7 +14,6 @@ from concurrent.futures import ThreadPoolExecutor
 from app.utils import hash_str
 from app.cache import get_cached_embedding, cache_embedding, get_cached_document, cache_document
 import logging
-from sklearn.metrics.pairwise import cosine_similarity
 from app.cloud_embeddings import encode
 
 logger = logging.getLogger(__name__)
@@ -25,6 +24,25 @@ DEFAULT_TOP_K = 8  # Top chunks to retrieve
 MAX_CONCURRENT_REQUESTS = 16  # Maximum number of concurrent API requests
 
 logger.info("Vector store initialized with Redis-only storage")
+
+def cosine_similarity_np(embeddings: np.ndarray, query_emb: np.ndarray) -> np.ndarray:
+    """
+    Compute cosine similarity between embeddings and query using NumPy only.
+    Much faster and lighter than scikit-learn for this simple operation.
+    
+    Args:
+        embeddings: Matrix of document embeddings (n_docs, n_features)
+        query_emb: Query embedding vector (n_features,)
+    
+    Returns:
+        Array of cosine similarities (n_docs,)
+    """
+    # Normalize embeddings and query
+    embeddings_norm = embeddings / np.linalg.norm(embeddings, axis=1, keepdims=True)
+    query_norm = query_emb / np.linalg.norm(query_emb)
+    
+    # Compute cosine similarity as dot product of normalized vectors
+    return np.dot(embeddings_norm, query_norm)
 
 def get_or_create_embeddings(doc_url: str, chunks: list[str], refs: list[str] = None):
     """
@@ -95,8 +113,8 @@ def retrieve_similar_chunks(
     """
     # Compute query embedding using cloud API
     query_emb = encode([query])[0]
-    # Compute cosine similarities
-    sims = cosine_similarity(embeddings, query_emb.reshape(1, -1)).flatten()
+    # Compute cosine similarities using our lightweight NumPy implementation
+    sims = cosine_similarity_np(embeddings, query_emb)
     # Get top indices
     top_idx = sims.argsort()[-top_k:][::-1]
     # Select chunks and refs

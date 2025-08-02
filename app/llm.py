@@ -57,14 +57,16 @@ def _cerebras_completion(prompt: str) -> str:
     
     for attempt in range(1, MAX_RETRIES + 1):
         try:
-            # Create the chat completion request
+            # Create the chat completion request with optimized parameters
             chat_completion = client.chat.completions.create(
                 messages=[
                     {"role": "user", "content": prompt}
                 ],
                 model=CEREBRAS_MODEL,
-                temperature=0.1,
-                max_tokens=150
+                temperature=0.05,  # Lower temperature for more consistent answers
+                max_tokens=100,    # Reduced for faster generation and concise answers
+                top_p=0.95,        # Focus on high-probability tokens
+                stream=False       # Ensure non-streaming for consistency
             )
             
             # Process response
@@ -81,7 +83,7 @@ def _cerebras_completion(prompt: str) -> str:
             logger.warning(f"{error_message}, retrying in {wait_time}s")
             time.sleep(wait_time)
     
-    raise LLMError("Failed to get response from GROQ API")
+    raise LLMError("Failed to get response from Cerebras API")
 
 def _ollama_completion(prompt: str, model: str = OLLAMA_MODEL) -> str:
     """Call Ollama API with retry logic"""
