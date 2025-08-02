@@ -29,6 +29,9 @@ USE_OLLAMA = os.getenv("USE_OLLAMA", "0") == "1"  # Use Ollama if specified
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434/api/generate")
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "llama3")
 
+# Export USE_OLLAMA for other modules
+__all__ = ['answer_with_llm', 'optimize_prompt', 'USE_OLLAMA', 'batch_cerebras_completions']
+
 # Cerebras configuration - using llama-4-scout-17b for optimal speed and quality
 CEREBRAS_API_KEY = os.getenv("CEREBRAS_API_KEY", "")
 CEREBRAS_MODEL = os.getenv("CEREBRAS_MODEL", "llama-4-scout-17b-16e-instruct") # Fast model with good token limit
@@ -45,13 +48,26 @@ class LLMError(Exception):
     """Error during LLM call"""
     pass
 
+# Import batch manager for rate limiting
+from app.cerebras_batch import batch_manager
+
+# Cerebras client instance (singleton)
+_cerebras_client = None
+
+def get_cerebras_client():
+    """Get or create Cerebras client instance"""
+    global _cerebras_client
+    if _cerebras_client is None:
+        from cerebras.cloud.sdk import Cerebras
+        if not CEREBRAS_API_KEY:
+            raise LLMError("CEREBRAS_API_KEY not set")
+        _cerebras_client = Cerebras(api_key=CEREBRAS_API_KEY)
+    return _cerebras_client
+
 def _cerebras_completion(prompt: str) -> str:
     """Call Cerebras API with retry logic"""
-    if not CEREBRAS_API_KEY:
-        raise LLMError("CEREBRAS_API_KEY not set")
-    
-    # Initialize Cerebras client
-    client = Cerebras(api_key=CEREBRAS_API_KEY)
+    # Get client instance (cached)
+    client = get_cerebras_client()
     
     # Log the request if in debug mode
     if DEBUG_API:
@@ -86,6 +102,14 @@ def _cerebras_completion(prompt: str) -> str:
             time.sleep(wait_time)
     
     raise LLMError("Failed to get response from Cerebras API")
+
+async def batch_cerebras_completions(prompts: List[str]) -> List[str]:
+    """Process multiple prompts with rate limiting and batching"""
+    if not prompts:
+        return []
+        
+    # Use the batch manager to process prompts efficiently
+    return await batch_manager.process_batch(prompts, _cerebras_completion)
 
 async def _ollama_completion(prompt: str, model: str = OLLAMA_MODEL) -> str:
     """Call Ollama API with retry logic asynchronously"""

@@ -5,8 +5,9 @@ Optimized for parallel processing and speed.
 
 from app.utils import download_and_parse_document, chunk_text
 from app.vector_store import get_or_create_embeddings, retrieve_similar_chunks_async
-from app.llm import answer_with_llm
+from app.llm import answer_with_llm, optimize_prompt
 from app.cache import get_cached_answer, cache_answer, clear_stale_cache
+from app.llm import USE_OLLAMA
 import asyncio
 import time
 from typing import List, Dict, Any, Tuple
@@ -230,14 +231,34 @@ async def process_document_and_answer(doc_url: str, questions: list[str]) -> lis
                 
             context_results[i] = (q, top_chunks, top_refs)
         
-        # Generate LLM tasks for all questions at once
-        llm_tasks = [
-            answer_with_llm(q, top_chunks, top_refs)
-            for i, (q, top_chunks, top_refs) in context_results.items()
-        ]
+        # Prepare all prompts in one batch for more efficient processing
+        prompts_data = []
+        for i, (q, top_chunks, top_refs) in context_results.items():
+            prompt = optimize_prompt(q, top_chunks, top_refs)
+            prompts_data.append((i, prompt))
         
-        # Execute all LLM tasks in parallel
-        llm_results = await asyncio.gather(*llm_tasks)
+        # Extract just the prompts for batch processing
+        prompts = [data[1] for data in prompts_data]
+        indices = [data[0] for data in prompts_data]
+        
+        # Process all prompts in an optimized batch
+        if USE_OLLAMA:
+            # For Ollama, still use individual async calls (could be optimized further)
+            llm_tasks = [
+                answer_with_llm(q, top_chunks, top_refs)
+                for i, (q, top_chunks, top_refs) in context_results.items()
+            ]
+            llm_results = await asyncio.gather(*llm_tasks)
+        else:
+            # For Cerebras, use batch processing with rate limiting
+            from app.llm import batch_cerebras_completions
+            llm_results_batch = await batch_cerebras_completions(prompts)
+            
+            # Rearrange results back to original order
+            llm_results = []
+            for idx in sorted(indices):
+                pos = indices.index(idx)
+                llm_results.append(llm_results_batch[pos])
         
         # Process results and update cache
         for (i, (q, _, _)), answer in zip(context_results.items(), llm_results):

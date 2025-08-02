@@ -23,6 +23,7 @@ async def download_and_parse_document(url: str) -> Tuple[str, Dict[str, Any]]:
     """
     Downloads and parses a PDF or DOCX document from a URL with caching.
     Returns (text, meta) where meta includes page/section info.
+    Uses in-memory parsing to avoid temp files.
     """
     # Check cache first
     cached = get_cached_document(url)
@@ -31,6 +32,7 @@ async def download_and_parse_document(url: str) -> Tuple[str, Dict[str, Any]]:
     
     # Use aiohttp for async HTTP requests
     import aiohttp
+    import io
     
     async with aiohttp.ClientSession() as session:
         async with session.get(url) as resp:
@@ -43,20 +45,14 @@ async def download_and_parse_document(url: str) -> Tuple[str, Dict[str, Any]]:
     
     # Process document based on type
     if ".pdf" in url or "pdf" in content_type:
-        # Parse PDF with parallel processing
-        # Write file in a thread to avoid blocking
+        # Parse PDF in-memory with parallel processing
         loop = asyncio.get_event_loop()
-        with ThreadPoolExecutor() as executor:
-            await loop.run_in_executor(
-                executor,
-                lambda: open("temp.pdf", "wb").write(content)
-            )
         
-        # Open PDF in a thread to avoid blocking
+        # Open PDF directly from memory buffer
         with ThreadPoolExecutor() as executor:
             doc = await loop.run_in_executor(
                 executor,
-                lambda: fitz.open("temp.pdf")
+                lambda: fitz.open(stream=content, filetype="pdf")
             )
         
         num_pages = len(doc)
@@ -97,21 +93,14 @@ async def download_and_parse_document(url: str) -> Tuple[str, Dict[str, Any]]:
             await loop.run_in_executor(executor, doc.close)
         
     elif ".docx" in url or "word" in content_type:
-        # Parse DOCX - write file and parse in thread pool to avoid blocking
+        # Parse DOCX directly from memory
         loop = asyncio.get_event_loop()
         with ThreadPoolExecutor() as executor:
-            # Write file
-            await loop.run_in_executor(
-                executor,
-                lambda: open("temp.docx", "wb").write(content)
-            )
-            
-            # Parse document
-            def parse_docx():
-                doc = docx.Document("temp.docx")
+            def parse_docx_from_memory():
+                doc = docx.Document(io.BytesIO(content))
                 return "\n".join([p.text for p in doc.paragraphs if p.text.strip()])
             
-            text = await loop.run_in_executor(executor, parse_docx)
+            text = await loop.run_in_executor(executor, parse_docx_from_memory)
         
         meta["page_refs"] = []
         

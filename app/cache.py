@@ -26,21 +26,15 @@ if hasattr(np, 'float_'):
 IS_VERCEL = os.environ.get("VERCEL", "0") == "1"
 USE_REDIS = os.environ.get("USE_REDIS", "0") == "1"
 
-# Initialize Redis if configured
-redis_client = None
+# Initialize Redis with connection manager if configured
 if USE_REDIS:
     try:
         import redis
-        REDIS_URL = os.environ.get("REDIS_URL")
-        if REDIS_URL:
-            redis_client = redis.from_url(REDIS_URL)
-            logger.info("Redis cache initialized")
-        else:
-            logger.warning("REDIS_URL not set but USE_REDIS=1. Falling back to local cache.")
+        from app.redis_manager import redis_manager, with_redis_retry
+        logger.info("Redis cache initialized with connection manager")
     except ImportError:
         logger.warning("Redis package not installed but USE_REDIS=1. Falling back to local cache.")
-    except Exception as e:
-        logger.error(f"Failed to connect to Redis: {str(e)}")
+        USE_REDIS = False
 
 # In-memory cache for Vercel or fallback
 MEMORY_CACHE = {
@@ -84,13 +78,18 @@ def get_cached_embedding(doc_id: str) -> Optional[np.ndarray]:
     key = _hash_key(f"emb:{doc_id}")
     
     # Try Redis first if available
-    if redis_client:
-        try:
-            cached = redis_client.get(f"embedding:{key}")
+    if USE_REDIS:
+        @with_redis_retry()
+        def get_from_redis(client=None):
+            cached = client.get(f"embedding:{key}")
             if cached:
                 return _deserialize_ndarray(cached)
-        except Exception as e:
-            logger.error(f"Redis error: {str(e)}")
+            return None
+        
+        # Use our retry wrapper
+        result = get_from_redis()
+        if result is not None:
+            return result
     
     # Try memory cache next (for Vercel)
     if IS_VERCEL:
@@ -114,17 +113,19 @@ def cache_embedding(doc_id: str, embeddings: np.ndarray) -> None:
     key = _hash_key(f"emb:{doc_id}")
     
     # Try Redis first if available
-    if redis_client:
-        try:
+    if USE_REDIS:
+        @with_redis_retry()
+        def store_in_redis(client=None):
             # Store with 24-hour expiration
-            redis_client.setex(
+            client.setex(
                 f"embedding:{key}",
                 86400,  # 24 hours in seconds
                 _serialize_ndarray(embeddings)
             )
+            return True
+        
+        if store_in_redis():
             return
-        except Exception as e:
-            logger.error(f"Redis error: {str(e)}")
     
     # Use memory cache for Vercel
     if IS_VERCEL:
@@ -142,13 +143,17 @@ def get_cached_answer(doc_url: str, question: str) -> Optional[str]:
     key = _hash_key(f"{doc_url}:{question}")
     
     # Try Redis first if available
-    if redis_client:
-        try:
-            cached = redis_client.get(f"answer:{key}")
+    if USE_REDIS:
+        @with_redis_retry()
+        def get_from_redis(client=None):
+            cached = client.get(f"answer:{key}")
             if cached:
                 return cached.decode('utf-8')
-        except Exception as e:
-            logger.error(f"Redis error: {str(e)}")
+            return None
+        
+        result = get_from_redis()
+        if result:
+            return result
     
     # Try memory cache next (for Vercel)
     if IS_VERCEL:
@@ -176,17 +181,19 @@ def cache_answer(doc_url: str, question: str, answer: str) -> None:
     key = _hash_key(f"{doc_url}:{question}")
     
     # Try Redis first if available
-    if redis_client:
-        try:
+    if USE_REDIS:
+        @with_redis_retry()
+        def store_in_redis(client=None):
             # Store with 24-hour expiration
-            redis_client.setex(
+            client.setex(
                 f"answer:{key}",
                 86400,  # 24 hours in seconds
                 answer
             )
+            return True
+        
+        if store_in_redis():
             return
-        except Exception as e:
-            logger.error(f"Redis error: {str(e)}")
     
     # Use memory cache for Vercel
     if IS_VERCEL:
@@ -206,13 +213,17 @@ def get_cached_document(doc_url: str) -> Optional[Tuple[str, Dict[str, Any]]]:
     key = _hash_key(doc_url)
     
     # Try Redis first if available
-    if redis_client:
-        try:
-            cached = redis_client.get(f"document:{key}")
+    if USE_REDIS:
+        @with_redis_retry()
+        def get_from_redis(client=None):
+            cached = client.get(f"document:{key}")
             if cached:
                 return pickle.loads(cached)
-        except Exception as e:
-            logger.error(f"Redis error: {str(e)}")
+            return None
+        
+        result = get_from_redis()
+        if result:
+            return result
     
     # Try memory cache next (for Vercel)
     if IS_VERCEL:
@@ -236,17 +247,19 @@ def cache_document(doc_url: str, text: str, meta: Dict[str, Any]) -> None:
     data = (text, meta)
     
     # Try Redis first if available
-    if redis_client:
-        try:
+    if USE_REDIS:
+        @with_redis_retry()
+        def store_in_redis(client=None):
             # Store with 7-day expiration
-            redis_client.setex(
+            client.setex(
                 f"document:{key}",
                 7 * 86400,  # 7 days in seconds
                 pickle.dumps(data)
             )
+            return True
+        
+        if store_in_redis():
             return
-        except Exception as e:
-            logger.error(f"Redis error: {str(e)}")
     
     # Use memory cache for Vercel
     if IS_VERCEL:
@@ -270,12 +283,9 @@ def clear_stale_cache(max_age_days: int = 7) -> int:
     removed = 0
     
     # Clear Redis cache if available
-    if redis_client:
-        try:
-            # We don't need to manually clear Redis as we're using SETEX with expiration
-            logger.info("Redis cache uses built-in expiration, skipping manual clear")
-        except Exception as e:
-            logger.error(f"Redis error while clearing cache: {str(e)}")
+    if USE_REDIS:
+        # We don't need to manually clear Redis as we're using SETEX with expiration
+        logger.info("Redis cache uses built-in expiration, skipping manual clear")
     
     # Clear local disk cache
     for cache_dir in [EMBEDDING_CACHE_DIR, ANSWER_CACHE_DIR, DOCUMENT_CACHE_DIR]:
