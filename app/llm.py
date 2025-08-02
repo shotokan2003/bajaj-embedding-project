@@ -87,8 +87,10 @@ def _cerebras_completion(prompt: str) -> str:
     
     raise LLMError("Failed to get response from Cerebras API")
 
-def _ollama_completion(prompt: str, model: str = OLLAMA_MODEL) -> str:
-    """Call Ollama API with retry logic"""
+async def _ollama_completion(prompt: str, model: str = OLLAMA_MODEL) -> str:
+    """Call Ollama API with retry logic asynchronously"""
+    import aiohttp
+    
     data = {
         "model": model,
         "prompt": prompt,
@@ -101,19 +103,21 @@ def _ollama_completion(prompt: str, model: str = OLLAMA_MODEL) -> str:
     
     for attempt in range(1, MAX_RETRIES + 1):
         try:
-            resp = requests.post(
-                OLLAMA_URL, 
-                json=data,
-                timeout=REQUEST_TIMEOUT
-            )
-            resp.raise_for_status()
-            return resp.json().get("response", "").strip()
-        except requests.RequestException as e:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    OLLAMA_URL, 
+                    json=data,
+                    timeout=REQUEST_TIMEOUT
+                ) as resp:
+                    resp.raise_for_status()
+                    result = await resp.json()
+                    return result.get("response", "").strip()
+        except (aiohttp.ClientError, asyncio.TimeoutError) as e:
             if attempt == MAX_RETRIES:
                 raise LLMError(f"Ollama API error: {str(e)}")
             wait_time = RETRY_BACKOFF ** attempt
             logger.warning(f"Ollama API error: {str(e)}, retrying in {wait_time}s")
-            time.sleep(wait_time)
+            await asyncio.sleep(wait_time)
     
     raise LLMError("Failed to get response from Ollama API")
 
@@ -185,19 +189,22 @@ async def answer_with_llm(question: str, context_chunks: List[str], refs: List[s
     # Create optimized prompt focusing on relevant context
     prompt = optimize_prompt(question, context_chunks, refs)
     
-    # Run LLM in thread pool to avoid blocking
-    loop = asyncio.get_event_loop()
-    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
-        if USE_OLLAMA:
-            try:
-                return await loop.run_in_executor(executor, _ollama_completion, prompt)
-            except LLMError as e:
-                logger.error(f"Ollama error: {str(e)}")
-                # Fall back to Cerebras if Ollama fails and Cerebras key exists
-                if CEREBRAS_API_KEY:
-                    logger.info("Falling back to Cerebras API")
+    if USE_OLLAMA:
+        try:
+            # Directly use the async function for Ollama
+            return await _ollama_completion(prompt)
+        except LLMError as e:
+            logger.error(f"Ollama error: {str(e)}")
+            # Fall back to Cerebras if Ollama fails and Cerebras key exists
+            if CEREBRAS_API_KEY:
+                logger.info("Falling back to Cerebras API")
+                # Run synchronous Cerebras in thread pool to avoid blocking
+                loop = asyncio.get_event_loop()
+                with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
                     return await loop.run_in_executor(executor, _cerebras_completion, prompt)
-                raise
-        else:
-            # Use Cerebras as the primary LLM
+            raise
+    else:
+        # Use Cerebras as the primary LLM (synchronous function in thread pool)
+        loop = asyncio.get_event_loop()
+        with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
             return await loop.run_in_executor(executor, _cerebras_completion, prompt)

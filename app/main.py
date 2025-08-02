@@ -21,11 +21,18 @@ logging.basicConfig(
 # Define lifespan for startup/shutdown events
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # Initialize background tasks
+    from app.background_tasks import start_background_tasks, stop_background_tasks
+    start_background_tasks()
+    
     # Clear stale cache entries on startup
     from app.cache import clear_stale_cache
     removed = clear_stale_cache(max_age_days=7)
     logging.info(f"Cleared {removed} stale cache entries")
     yield
+    
+    # Stop background tasks on shutdown
+    stop_background_tasks()
 
 app = FastAPI(title="HackRx LLM Query API", lifespan=lifespan)
 # security = HTTPBearer()

@@ -29,24 +29,40 @@ async def download_and_parse_document(url: str) -> Tuple[str, Dict[str, Any]]:
     if cached:
         return cached
     
-    resp = requests.get(url)
-    if resp.status_code != 200:
-        raise ValueError("Failed to download document.")
+    # Use aiohttp for async HTTP requests
+    import aiohttp
     
-    content_type = resp.headers.get("content-type", "")
-    meta = {}
+    async with aiohttp.ClientSession() as session:
+        async with session.get(url) as resp:
+            if resp.status != 200:
+                raise ValueError("Failed to download document.")
+            
+            content_type = resp.headers.get("content-type", "")
+            content = await resp.read()
+            meta = {}
     
+    # Process document based on type
     if ".pdf" in url or "pdf" in content_type:
         # Parse PDF with parallel processing
-        with open("temp.pdf", "wb") as f:
-            f.write(resp.content)
+        # Write file in a thread to avoid blocking
+        loop = asyncio.get_event_loop()
+        with ThreadPoolExecutor() as executor:
+            await loop.run_in_executor(
+                executor,
+                lambda: open("temp.pdf", "wb").write(content)
+            )
         
-        doc = fitz.open("temp.pdf")
+        # Open PDF in a thread to avoid blocking
+        with ThreadPoolExecutor() as executor:
+            doc = await loop.run_in_executor(
+                executor,
+                lambda: fitz.open("temp.pdf")
+            )
+        
         num_pages = len(doc)
         meta["total_pages"] = num_pages
         
         # Process pages in parallel
-        loop = asyncio.get_event_loop()
         with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
             tasks = [
                 loop.run_in_executor(
@@ -75,22 +91,40 @@ async def download_and_parse_document(url: str) -> Tuple[str, Dict[str, Any]]:
                         text += table + "\n"
         
         meta["page_refs"] = page_refs
-        doc.close()
+        
+        # Close the document in a thread to avoid blocking
+        with ThreadPoolExecutor() as executor:
+            await loop.run_in_executor(executor, doc.close)
         
     elif ".docx" in url or "word" in content_type:
-        # Parse DOCX
-        with open("temp.docx", "wb") as f:
-            f.write(resp.content)
-        doc = docx.Document("temp.docx")
-        text = "\n".join([p.text for p in doc.paragraphs if p.text.strip()])
+        # Parse DOCX - write file and parse in thread pool to avoid blocking
+        loop = asyncio.get_event_loop()
+        with ThreadPoolExecutor() as executor:
+            # Write file
+            await loop.run_in_executor(
+                executor,
+                lambda: open("temp.docx", "wb").write(content)
+            )
+            
+            # Parse document
+            def parse_docx():
+                doc = docx.Document("temp.docx")
+                return "\n".join([p.text for p in doc.paragraphs if p.text.strip()])
+            
+            text = await loop.run_in_executor(executor, parse_docx)
+        
         meta["page_refs"] = []
         
     else:
         raise ValueError("Unsupported document type.")
     
-    # Cache the document
-    cache_document(url, text, meta)
+    # Cache the document (don't await to avoid blocking)
+    asyncio.create_task(async_cache_document(url, text, meta))
     return text, meta
+
+async def async_cache_document(url: str, text: str, meta: Dict[str, Any]):
+    """Async wrapper to cache document without blocking"""
+    cache_document(url, text, meta)
 
 def extract_page_text(doc: fitz.Document, page_num: int) -> Tuple[str, List[str]]:
     """Extract text and tables from a page (used for parallel processing)"""
@@ -112,12 +146,13 @@ def extract_page_text(doc: fitz.Document, page_num: int) -> Tuple[str, List[str]
         
     return page_text, tables
 
-def chunk_text(text: str, meta: dict, chunk_size: int = 800) -> tuple[list[str], list[str]]:
+async def chunk_text(text: str, meta: dict, chunk_size: int = 800) -> tuple[list[str], list[str]]:
     """
     Splits text into semantic chunks (paragraphs, sections) up to chunk_size words.
     Returns chunks and their references.
     
     Uses smaller chunk size (800 vs 1000) and better boundary detection to improve retrieval accuracy.
+    Async version for better performance.
     """
     # First, identify key insurance policy sections to preserve intact
     critical_policy_sections = {

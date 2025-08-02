@@ -17,6 +17,13 @@ import re
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+async def get_answer_from_cache(index: int, doc_url: str, question: str) -> Tuple[int, str]:
+    """Helper function to get answer from cache asynchronously
+    Returns (index, cached_answer) tuple where cached_answer is None if not in cache
+    """
+    cached = get_cached_answer(doc_url, question)
+    return index, cached
+
 def post_process_answer(answer: str) -> str:
     """
     Ensures answers are properly formatted:
@@ -118,17 +125,24 @@ async def process_document_and_answer(doc_url: str, questions: list[str]) -> lis
     logger.info(f"Processing document: {doc_url}")
     logger.info(f"Number of questions: {len(questions)}")
     
-    # Check cache for all questions before doing any processing
+    # Check cache for all questions in parallel - this can save significant time
+    cache_tasks = []
+    for i, q in enumerate(questions):
+        # Create a task that returns the index and cached answer
+        cache_tasks.append(asyncio.create_task(get_answer_from_cache(i, doc_url, q)))
+    
+    # Wait for all cache checks to complete
+    cache_results = await asyncio.gather(*cache_tasks)
+    
+    # Process cache results
     cached_answers = {}
     questions_to_process = []
     
-    # Early cache check - this can save significant time
-    for i, q in enumerate(questions):
-        cached = get_cached_answer(doc_url, q)
-        if cached:
-            cached_answers[i] = cached
+    for i, answer in cache_results:
+        if answer:
+            cached_answers[i] = answer
         else:
-            questions_to_process.append((i, q))
+            questions_to_process.append((i, questions[i]))
     
     # If all answers are cached, we can skip document processing entirely
     if len(cached_answers) == len(questions):
@@ -137,20 +151,23 @@ async def process_document_and_answer(doc_url: str, questions: list[str]) -> lis
     
     logger.info(f"Cache hits: {len(cached_answers)}/{len(questions)}")
     
-    # Step 1: Download and parse document (PDF/DOCX) - async with caching
-    text, meta = await download_and_parse_document(doc_url)
+    # Start all parsing tasks in parallel
+    parsing_task = download_and_parse_document(doc_url)
+    
+    # Wait for parsing to complete
+    text, meta = await parsing_task
     if not text:
         raise ValueError("Document parsing failed or empty document.")
     logger.info(f"Document parsed in {time.time() - start_time:.2f}s")
     
-    # Step 2: Chunk text - optimized for semantic boundaries
+    # Step 2: Chunk text - optimized for semantic boundaries (now async)
     chunk_start = time.time()
-    chunks, chunk_refs = chunk_text(text, meta)
+    chunks, chunk_refs = await chunk_text(text, meta)
     logger.info(f"Document chunked into {len(chunks)} segments in {time.time() - chunk_start:.2f}s")
     
-    # Step 3: Get or create embeddings and store in ChromaDB
+    # Step 3: Get or create embeddings asynchronously
     embedding_start = time.time()
-    doc_id, embeddings = get_or_create_embeddings(doc_url, chunks, chunk_refs)
+    doc_id, embeddings = await get_or_create_embeddings(doc_url, chunks, chunk_refs)
     logger.info(f"Embeddings processed in {time.time() - embedding_start:.2f}s")
     
     # Step 4: For each question, process in parallel

@@ -44,7 +44,7 @@ def cosine_similarity_np(embeddings: np.ndarray, query_emb: np.ndarray) -> np.nd
     # Compute cosine similarity as dot product of normalized vectors
     return np.dot(embeddings_norm, query_norm)
 
-def get_or_create_embeddings(doc_url: str, chunks: list[str], refs: list[str] = None):
+async def get_or_create_embeddings(doc_url: str, chunks: list[str], refs: list[str] = None):
     """
     Returns (doc_id, embeddings) for the document, using cache if available.
     Uses cloud embedding API with appropriate batching.
@@ -62,11 +62,25 @@ def get_or_create_embeddings(doc_url: str, chunks: list[str], refs: list[str] = 
         logger.info(f"Using cached embeddings for document {doc_id}")
         return doc_id, cached
     
-    # Process embeddings with cloud API
+    # Process embeddings with cloud API (run in thread pool since encode is CPU-bound)
     logger.info(f"Generating embeddings for {len(chunks)} chunks using cloud API")
-    embeddings = encode(chunks, batch_size=BATCH_SIZE, show_progress_bar=True)
+    loop = asyncio.get_event_loop()
+    with ThreadPoolExecutor(max_workers=MAX_CONCURRENT_REQUESTS) as executor:
+        embeddings = await loop.run_in_executor(
+            executor, 
+            lambda: encode(chunks, batch_size=BATCH_SIZE, show_progress_bar=True)
+        )
     
-    # Cache embeddings and document chunks for future use
+    # Cache embeddings and document chunks for future use (run in task to avoid blocking)
+    # We don't need to await this as it's not critical for the response
+    asyncio.create_task(async_cache_operations(doc_id, doc_url, embeddings, chunks, refs))
+    
+    logger.info(f"Cached embeddings and document data for {doc_id}")
+    return doc_id, embeddings
+
+async def async_cache_operations(doc_id: str, doc_url: str, embeddings: np.ndarray, chunks: list[str], refs: list[str] = None):
+    """Helper function to handle cache operations asynchronously"""
+    # Cache embeddings
     cache_embedding(doc_id, embeddings)
     
     # Store document chunks and refs for retrieval
@@ -75,11 +89,8 @@ def get_or_create_embeddings(doc_url: str, chunks: list[str], refs: list[str] = 
         "refs": refs or []
     }
     cache_document(doc_url, doc_data, {"processed": True})
-    
-    logger.info(f"Cached embeddings and document data for {doc_id}")
-    return doc_id, embeddings
 
-# Cosine similarity based retrieval
+# Cosine similarity based retrieval - now directly using the async version
 async def retrieve_similar_chunks_async(
     doc_id: str,
     query: str,
@@ -90,16 +101,11 @@ async def retrieve_similar_chunks_async(
 ) -> tuple[list[str], list[str]]:
     """
     Async cosine-based retrieval using precomputed embeddings.
+    This function is now a simple wrapper around the async retrieve_similar_chunks.
     """
-    loop = asyncio.get_event_loop()
-    with ThreadPoolExecutor() as executor:
-        return await loop.run_in_executor(
-            executor,
-            retrieve_similar_chunks,
-            doc_id, query, chunks, refs, embeddings, top_k
-        )
+    return await retrieve_similar_chunks(doc_id, query, chunks, refs, embeddings, top_k)
 
-def retrieve_similar_chunks(
+async def retrieve_similar_chunks(
     doc_id: str,
     query: str,
     chunks: list[str],
@@ -111,12 +117,18 @@ def retrieve_similar_chunks(
     Compute cosine similarity between query embedding and all chunk embeddings,
     return top_k most similar chunks and their refs.
     """
-    # Compute query embedding using cloud API
-    query_emb = encode([query])[0]
+    # Compute query embedding using cloud API (run in thread pool since encode is CPU-bound)
+    loop = asyncio.get_event_loop()
+    with ThreadPoolExecutor() as executor:
+        query_emb = await loop.run_in_executor(executor, lambda: encode([query])[0])
+    
     # Compute cosine similarities using our lightweight NumPy implementation
+    # This is fast enough to not need thread pool
     sims = cosine_similarity_np(embeddings, query_emb)
+    
     # Get top indices
     top_idx = sims.argsort()[-top_k:][::-1]
+    
     # Select chunks and refs
     selected_chunks = [chunks[i] for i in top_idx]
     selected_refs = [refs[i] for i in top_idx]
