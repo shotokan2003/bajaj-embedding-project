@@ -12,16 +12,16 @@ from typing import List, Tuple, Dict, Any
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
 from app.utils import hash_str
-from app.cache import get_cached_embedding, cache_embedding, get_cached_document, cache_document
+from app.cache import get_cached_embedding, cache_embedding, cache_document
 import logging
 from app.cloud_embeddings import encode
 
 logger = logging.getLogger(__name__)
 
 # Constants
-BATCH_SIZE = 16  # Batch size for parallel processing
+BATCH_SIZE = 32  # Batch size for parallel processing
 DEFAULT_TOP_K = 8  # Top chunks to retrieve
-MAX_CONCURRENT_REQUESTS = 16  # Maximum number of concurrent API requests
+MAX_CONCURRENT_REQUESTS = 32  # Maximum number of concurrent API requests
 
 logger.info("Vector store initialized with Redis-only storage")
 

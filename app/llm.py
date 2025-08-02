@@ -11,6 +11,8 @@ from typing import List, Dict, Any, Optional
 import logging
 from dotenv import load_dotenv
 
+logger = logging.getLogger(__name__)
+
 # Import Cerebras SDK for fast inference
 try:
     from cerebras.cloud.sdk import Cerebras
