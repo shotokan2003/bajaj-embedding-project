@@ -48,6 +48,8 @@ async def batch_extract_answers_with_retry(questions, context, max_retries=3):
 You are a precise and reliable insurance policy assistant.
 
 Answer the questions ONLY using the information provided in the CONTEXT.
+"If the exact info is not stated explicitly in the context, please try to infer based on related information without hallucinating."
+
 If the information is not present, respond with: "Not specified in the provided context."
 
 Answer each question in concise, complete sentences of 25-30 words max.

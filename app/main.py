@@ -14,12 +14,16 @@ from pydantic import BaseModel
 from typing import List
 
 from app.document_loader import fetch_and_parse
-from app.embedder import get_embeddings, _embedder
+from app.embedder import get_embeddings
 from app.vector_db import collection_exists, upsert_documents, semantic_search
 from app.llm_answer import batch_extract_answers_with_retry
+from google import generativeai as genai
+
+
 
 
 app = FastAPI()
+
 API_KEY = os.getenv("API_KEY")
 bearer_scheme = HTTPBearer()
 
@@ -29,46 +33,34 @@ class HackrxRequest(BaseModel):
 
 
 def get_collection_name(doc_url: str):
-    # Stable doc hash
     doc_hash = hashlib.sha256(doc_url.encode()).hexdigest()[:24]
-
-    # Format embedding model name safe for collection naming
-    embedding_model_name = _embedder.model_name.replace('/', '-').replace(':', '-')
-
-    # Get embedding dimension from a sample embedding
-    example_embedding = list(_embedder.embed(["test"]))[0]
+    embedding_model_name = "gemini-embedding-001"
+    # Use Gemini embedding API correctly
+    example_embedding = genai.embed_content(
+        model=embedding_model_name,
+        content="test"
+    )["embedding"]
     embedding_dim = len(example_embedding)
-
-    # Compose versioned collection name
     return f"{doc_hash}_{embedding_model_name}_{embedding_dim}"
+
+
+
+
 
 
 def extract_clean_answers(raw_choices_list):
     """
-    Extract the JSON string inside Groq's Choice object string and parse clean answers.
-
-    Args:
-        raw_choices_list (List[str]): Raw Groq Choice string list from LLM response.
-
-    Returns:
-        List[str]: Clean answer strings extracted from JSON.
+    Extract the list of answer strings from the raw Groq Choice object string.
     """
     raw_text = raw_choices_list[0] if raw_choices_list else ""
-
-    # Regex to capture JSON inside content='[...]'
-    pattern = r"content='(\[.*\])'"
-    match = re.search(pattern, raw_text, re.DOTALL)
+    match = re.search(r"content=[\"'](\[.*\])[\"']", raw_text, re.DOTALL)
     if not match:
-        # Fallback: return raw input as-is
-        return raw_choices_list
-
+        return [raw_text]
     json_str = match.group(1)
-
     try:
         data = json.loads(json_str)
     except json.JSONDecodeError:
-        return raw_choices_list
-
+        return [raw_text]
     answers = []
     for item in data:
         if isinstance(item, dict) and "answer" in item:
@@ -77,6 +69,10 @@ def extract_clean_answers(raw_choices_list):
             answers.append(str(item))
     return answers
 
+
+@app.get("/")
+def read_root():
+    return {"message": "API is up! Visit /docs for API documentation."}
 
 @app.post("/hackrx/run")
 async def hackrx_run(
@@ -119,7 +115,7 @@ async def hackrx_run(
     timings["question_embed"] = time.time() - t_qembed
 
     t_search = time.time()
-    retrieved_chunks = [semantic_search(collection_name, q_emb, top_k=3) for q_emb in question_embeddings]
+    retrieved_chunks = [semantic_search(collection_name, q_emb, top_k=7) for q_emb in question_embeddings]
     timings["vector_search"] = time.time() - t_search
 
     unique_texts = []
@@ -146,4 +142,15 @@ async def hackrx_run(
     timings["overall"] = time.time() - t0
     print(f"TIMINGS: {timings}")
 
+    # return JSONResponse(content={"answers": answers, "timings": timings})
+    try:
+        raw_choices = await batch_extract_answers_with_retry(questions, context_for_llm)
+        answers = extract_clean_answers(raw_choices)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"LLM call failed: {e}")
+
+    timings["llm"] = time.time() - t_llm
+    timings["overall"] = time.time() - t0
+
     return JSONResponse(content={"answers": answers, "timings": timings})
+

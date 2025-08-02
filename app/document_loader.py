@@ -44,7 +44,7 @@ def parse_docx(path: str) -> str:
     except Exception:
         return ""
 
-def chunk_by_sections(text: str, min_chunk_words=150, max_chunk_words=350) -> List[Dict]:
+def chunk_by_sections(text: str, min_chunk_words=350, max_chunk_words=550) -> List[Dict]:
     pattern = r'\n(?=Section\s+\d+|Clause\s+\d+(\.\d+)?|^\d+\.\s|^[A-Z][A-Za-z\s]{3,}\n)'
     sections = re.split(pattern, text, flags=re.MULTILINE)
     chunks = []

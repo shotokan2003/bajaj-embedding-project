@@ -46,7 +46,7 @@ def chunk_by_section(text, sections):
     :return: List[Dict] {"text":..., "section_id":...}
     """
     words = text.split()
-    chunk_size = 300  # words per chunk
+    chunk_size = 500  # words per chunk
     chunks = []
     
     for i in range(0, len(words), chunk_size):
