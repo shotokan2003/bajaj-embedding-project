@@ -74,4 +74,4 @@ async def hackrx_run(
 if __name__ == "__main__":
     import uvicorn
     # Run the FastAPI app with Uvicorn
-    uvicorn.run("app.main:app", host="localhost", port=int(os.getenv("PORT", 8000)), reload=True)
+    uvicorn.run("app.main:app", host="0.0.0.0", port=int(os.getenv("PORT", 8000)), reload=True)
