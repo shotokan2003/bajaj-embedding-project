@@ -28,7 +28,24 @@ async def download_and_parse_document(url: str) -> Tuple[str, Dict[str, Any]]:
     # Check cache first
     cached = get_cached_document(url)
     if cached:
-        return cached
+        # Validate the cache format to ensure it's a tuple with (text, meta)
+        if isinstance(cached, tuple) and len(cached) == 2:
+            text, meta = cached
+            # Ensure text is a string and meta is a dict
+            if isinstance(text, str) and isinstance(meta, dict):
+                return text, meta
+            elif isinstance(text, dict) and not isinstance(meta, dict):
+                # Handle incorrect format - text is a dict, meta might be something else
+                import logging
+                logging.error("Cache returned dict as text instead of string. Fixing format.")
+                # Try to extract correct values
+                return str(text), {} if not isinstance(meta, dict) else meta
+        
+        # If we got here, the cache format was invalid
+        import logging
+        logging.warning(f"Invalid cache format from get_cached_document. Expected (str, dict) tuple but got {type(cached)}")
+        # Return empty to force re-parsing
+        return "", {}
     
     # Use aiohttp for async HTTP requests
     import aiohttp
@@ -143,6 +160,11 @@ async def chunk_text(text: str, meta: dict, chunk_size: int = 800) -> tuple[list
     Uses smaller chunk size (800 vs 1000) and better boundary detection to improve retrieval accuracy.
     Async version for better performance.
     """
+    # Handle case where text might not be a string
+    if not isinstance(text, str):
+        import logging
+        logging.error(f"Expected text to be a string, got {type(text)}. Converting to string.")
+        text = str(text)
     # First, identify key insurance policy sections to preserve intact
     critical_policy_sections = {
         "grace period": r'(?i)(\bgrace period\b.*?(?:\.|$)(?:[^\n]*\n?){0,3})',

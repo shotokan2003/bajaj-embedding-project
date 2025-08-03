@@ -156,12 +156,33 @@ async def process_document_and_answer(doc_url: str, questions: list[str]) -> lis
     parsing_task = download_and_parse_document(doc_url)
     
     # Wait for parsing to complete
-    text, meta = await parsing_task
+    result = await parsing_task
+    
+    # Check if result is a tuple with text and meta
+    if isinstance(result, tuple) and len(result) == 2:
+        text, meta = result
+    else:
+        # Handle case where result might be a dict or other type
+        if isinstance(result, dict):
+            # This is the error case we're fixing - result came back as a dict
+            logger.error("Document parsing returned a dict instead of (text, meta) tuple")
+            # Try to extract text and meta from the dict
+            text = result.get('text', '')
+            meta = result.get('meta', {})
+        else:
+            text = str(result)
+            meta = {}
+    
     if not text:
         raise ValueError("Document parsing failed or empty document.")
     logger.info(f"Document parsed in {time.time() - start_time:.2f}s")
     
     # Step 2: Chunk text - optimized for semantic boundaries (now async)
+    # Ensure text is a string before passing to chunk_text
+    if not isinstance(text, str):
+        logger.error(f"Expected text to be a string, but got {type(text)}")
+        text = str(text)
+        
     chunk_start = time.time()
     chunks, chunk_refs = await chunk_text(text, meta)
     logger.info(f"Document chunked into {len(chunks)} segments in {time.time() - chunk_start:.2f}s")
