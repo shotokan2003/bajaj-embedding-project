@@ -14,3 +14,5 @@ google-generativeai>=0.3.0
 cerebras-cloud-sdk
 gunicorn
 numpy
+aiohttp
+asyncio
