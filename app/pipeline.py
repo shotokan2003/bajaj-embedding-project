@@ -1,12 +1,11 @@
 """
-Pipeline module: Orchestrates document ingestion, chunking, embedding, retrieval, LLM, and caching.
-Optimized for parallel processing and speed.
+Pipeline module: Orchestrates document ingestion, chunking, embedding, retrieval, and LLM.
+Optimized for parallel processing and speed with direct processing (no caching).
 """
 
 from app.utils import download_and_parse_document, chunk_text
 from app.vector_store import get_or_create_embeddings, retrieve_similar_chunks_async
 from app.llm import answer_with_llm, optimize_prompt
-from app.cache import get_cached_answer, cache_answer, clear_stale_cache
 from app.llm import USE_OLLAMA
 import asyncio
 import time
@@ -17,13 +16,6 @@ import re
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
-
-async def get_answer_from_cache(index: int, doc_url: str, question: str) -> Tuple[int, str]:
-    """Helper function to get answer from cache asynchronously
-    Returns (index, cached_answer) tuple where cached_answer is None if not in cache
-    """
-    cached = get_cached_answer(doc_url, question)
-    return index, cached
 
 def post_process_answer(answer: str) -> str:
     """
@@ -121,36 +113,15 @@ async def process_document_and_answer(doc_url: str, questions: list[str]) -> lis
     """
     Main pipeline: For a document and list of questions, returns answers.
     Optimized for parallel processing of document parsing and question answering.
+    No caching - direct processing only.
     """
     start_time = time.time()
     logger.info(f"Processing document: {doc_url}")
     logger.info(f"Number of questions: {len(questions)}")
     
-    # Check cache for all questions in parallel - this can save significant time
-    cache_tasks = []
-    for i, q in enumerate(questions):
-        # Create a task that returns the index and cached answer
-        cache_tasks.append(asyncio.create_task(get_answer_from_cache(i, doc_url, q)))
-    
-    # Wait for all cache checks to complete
-    cache_results = await asyncio.gather(*cache_tasks)
-    
-    # Process cache results
+    # Process all questions directly (no caching)
+    questions_to_process = [(i, q) for i, q in enumerate(questions)]
     cached_answers = {}
-    questions_to_process = []
-    
-    for i, answer in cache_results:
-        if answer:
-            cached_answers[i] = answer
-        else:
-            questions_to_process.append((i, questions[i]))
-    
-    # If all answers are cached, we can skip document processing entirely
-    if len(cached_answers) == len(questions):
-        logger.info(f"All answers found in cache. Skipping document processing.")
-        return [cached_answers[i] for i in range(len(questions))]
-    
-    logger.info(f"Cache hits: {len(cached_answers)}/{len(questions)}")
     
     # Start all parsing tasks in parallel
     parsing_task = download_and_parse_document(doc_url)
@@ -281,13 +252,11 @@ async def process_document_and_answer(doc_url: str, questions: list[str]) -> lis
                 pos = indices.index(idx)
                 llm_results.append(llm_results_batch[pos])
         
-        # Process results and update cache
+        # Process results (no caching)
         for (i, (q, _, _)), answer in zip(context_results.items(), llm_results):
             # Post-process answer for consistent formatting
             answer = post_process_answer(answer)
             cached_answers[i] = answer
-            # Cache the new answer
-            cache_answer(doc_url, q, answer)
     
     # Prepare final answers in the original order
     answers = [cached_answers.get(i) for i in range(len(questions))]

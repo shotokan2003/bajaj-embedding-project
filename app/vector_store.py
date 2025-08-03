@@ -1,6 +1,6 @@
 """
-Vector store: Handles embedding, storage, and retrieval using Redis cache and cloud embedding APIs.
-Optimized for serverless deployment without ChromaDB dependency.
+Vector store: Handles embedding and vector-based retrieval using cloud embedding APIs.
+Optimized for serverless deployment with direct processing (no database or caching).
 """
 
 # Import NumPy patch to ensure compatibility with NumPy 2.0+
@@ -12,7 +12,6 @@ from typing import List, Tuple, Dict, Any
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
 from app.utils import hash_str
-from app.cache import get_cached_embedding, cache_embedding, cache_document
 import logging
 from app.cloud_embeddings import encode
 
@@ -20,10 +19,10 @@ logger = logging.getLogger(__name__)
 
 # Constants
 BATCH_SIZE = 64  # Batch size for parallel processing
-DEFAULT_TOP_K = 8  # Top chunks to retrieve
+DEFAULT_TOP_K = 10  # Top chunks to retrieve
 MAX_CONCURRENT_REQUESTS = 64  # Maximum number of concurrent API requests
 
-logger.info("Vector store initialized with Redis-only storage")
+logger.info("Vector store initialized with direct API processing (no caching)")
 
 def cosine_similarity_np(embeddings: np.ndarray, query_emb: np.ndarray) -> np.ndarray:
     """
@@ -46,7 +45,7 @@ def cosine_similarity_np(embeddings: np.ndarray, query_emb: np.ndarray) -> np.nd
 
 async def get_or_create_embeddings(doc_url: str, chunks: list[str], refs: list[str] = None):
     """
-    Returns (doc_id, embeddings) for the document, using cache if available.
+    Returns (doc_id, embeddings) for the document.
     Uses cloud embedding API with appropriate batching.
     
     Args:
@@ -55,12 +54,6 @@ async def get_or_create_embeddings(doc_url: str, chunks: list[str], refs: list[s
         refs: List of reference information (e.g. page numbers)
     """
     doc_id = hash_str(doc_url)
-    
-    # Check cache first
-    cached = get_cached_embedding(doc_id)
-    if cached is not None:
-        logger.info(f"Using cached embeddings for document {doc_id}")
-        return doc_id, cached
     
     # Process embeddings with cloud API (run in thread pool since encode is CPU-bound)
     logger.info(f"Generating embeddings for {len(chunks)} chunks using cloud API")
@@ -71,24 +64,8 @@ async def get_or_create_embeddings(doc_url: str, chunks: list[str], refs: list[s
             lambda: encode(chunks, batch_size=BATCH_SIZE, show_progress_bar=True)
         )
     
-    # Cache embeddings and document chunks for future use (run in task to avoid blocking)
-    # We don't need to await this as it's not critical for the response
-    asyncio.create_task(async_cache_operations(doc_id, doc_url, embeddings, chunks, refs))
-    
-    logger.info(f"Cached embeddings and document data for {doc_id}")
+    logger.info(f"Generated embeddings for document {doc_id}")
     return doc_id, embeddings
-
-async def async_cache_operations(doc_id: str, doc_url: str, embeddings: np.ndarray, chunks: list[str], refs: list[str] = None):
-    """Helper function to handle cache operations asynchronously"""
-    # Cache embeddings
-    cache_embedding(doc_id, embeddings)
-    
-    # Store document chunks and refs for retrieval
-    doc_data = {
-        "chunks": chunks,
-        "refs": refs or []
-    }
-    cache_document(doc_url, doc_data, {"processed": True})
 
 # Cosine similarity based retrieval - now directly using the async version
 async def retrieve_similar_chunks_async(

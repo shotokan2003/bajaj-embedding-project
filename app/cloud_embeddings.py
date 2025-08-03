@@ -78,37 +78,10 @@ def get_embedding(text: str) -> np.ndarray:
         logger.error(f"API request error: {str(e)}")
         raise EmbeddingError(f"API request failed: {str(e)}")
 
-import hashlib
 import concurrent.futures
 import functools
-import threading
 
-# Thread-local cache for embeddings to reduce API calls
-_local_cache = threading.local()
-_cache_lock = threading.Lock()
-_embedding_cache = {}  # Global cache
-
-def _hash_text(text: str) -> str:
-    """Create a hash for the text to use as a cache key"""
-    return hashlib.md5(text.encode('utf-8')).hexdigest()
-
-def get_embedding_cached(text: str) -> np.ndarray:
-    """Get embedding with caching to reduce API calls"""
-    # Generate hash for cache key
-    text_hash = _hash_text(text)
-    
-    # Check if we have it in our cache
-    with _cache_lock:
-        if text_hash in _embedding_cache:
-            return _embedding_cache[text_hash]
-    
-    # If not in cache, generate and store
-    embedding = get_embedding(text)
-    
-    with _cache_lock:
-        _embedding_cache[text_hash] = embedding
-    
-    return embedding
+# No caching - direct API calls only
 
 def encode(texts: List[str], batch_size: int = 16, show_progress_bar: bool = False) -> np.ndarray:
     """
@@ -127,47 +100,28 @@ def encode(texts: List[str], batch_size: int = 16, show_progress_bar: bool = Fal
     if not texts:
         return np.array([])
     
-    # Deduplicate texts to avoid redundant API calls
+    # Deduplicate texts to avoid redundant API calls within the same batch
     unique_texts = list(set(texts))
     text_to_idx = {text: i for i, text in enumerate(texts)}
     idx_to_unique_idx = {i: unique_texts.index(text) for i, text in enumerate(texts)}
     
-    # Check if all are in cache already
-    all_hashes = [_hash_text(text) for text in unique_texts]
-    all_cached = True
-    
-    with _cache_lock:
-        for text_hash in all_hashes:
-            if text_hash not in _embedding_cache:
-                all_cached = False
-                break
-    
-    if all_cached:
-        # If all are cached, retrieve them from cache
-        with _cache_lock:
-            unique_embeddings = [_embedding_cache[_hash_text(text)] for text in unique_texts]
-        
-        # Map back to original order
-        final_embeddings = [unique_embeddings[idx_to_unique_idx[i]] for i in range(len(texts))]
-        return np.array(final_embeddings)
-    
     # For very small batches, process sequentially to avoid thread overhead
     if len(unique_texts) <= 4:
-        unique_embeddings = [get_embedding_cached(text) for text in unique_texts]
+        unique_embeddings = [get_embedding(text) for text in unique_texts]
     else:
         # Use thread pool for parallel processing with optimal worker count
         # More workers for larger batches, but cap based on CPU count
         num_workers = min(max(batch_size, 8), os.cpu_count() * 2 or 16)
         
-        # Process texts in parallel using thread pool
+        # Process in parallel
         with concurrent.futures.ThreadPoolExecutor(max_workers=num_workers) as executor:
-            if show_progress_bar:
-                logger.info(f"Processing {len(unique_texts)} texts with {num_workers} workers")
-            
-            unique_embeddings = list(executor.map(get_embedding_cached, unique_texts))
-            
-            if show_progress_bar:
-                logger.info(f"Completed embedding {len(unique_texts)} texts")
+            unique_embeddings = list(executor.map(get_embedding, unique_texts))
+    
+    # Map back to original order
+    final_embeddings = [unique_embeddings[idx_to_unique_idx[i]] for i in range(len(texts))]
+    return np.array(final_embeddings)
+        
+        # This code block is unreachable after our updates and should be removed
     
     # Map unique embeddings back to original texts
     final_embeddings = [unique_embeddings[idx_to_unique_idx[i]] for i in range(len(texts))]

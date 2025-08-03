@@ -7,7 +7,6 @@ import time
 import logging
 from typing import Callable, Dict, Any, List, Optional
 from functools import wraps
-from app.cache import clear_stale_cache
 
 logger = logging.getLogger(__name__)
 
@@ -104,20 +103,12 @@ class BackgroundTaskManager:
 # Create a global task manager
 task_manager = BackgroundTaskManager()
 
-# Define default tasks
-async def clean_cache_task():
-    """Task to clean stale cache entries."""
-    removed = clear_stale_cache(max_age_days=7)
-    logger.info(f"Cleared {removed} stale cache entries")
+# No default tasks with caching removed
 
 def start_background_tasks():
     """Start background tasks for the application."""
     task_manager.start()
-    
-    # Add cache cleaning task - run every hour
-    task_manager.add_task("cache_cleanup", clean_cache_task, 3600)
-    
-    logger.info("Background tasks initialized")
+    logger.info("Background tasks initialized (no cache cleanup needed)")
 
 def stop_background_tasks():
     """Stop all background tasks."""

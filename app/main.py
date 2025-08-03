@@ -25,10 +25,8 @@ async def lifespan(app: FastAPI):
     from app.background_tasks import start_background_tasks, stop_background_tasks
     start_background_tasks()
     
-    # Clear stale cache entries on startup
-    from app.cache import clear_stale_cache
-    removed = clear_stale_cache(max_age_days=7)
-    logging.info(f"Cleared {removed} stale cache entries")
+    # No cache to clear - direct processing only
+    logging.info("Using direct processing without caching")
     yield
     
     # Stop background tasks on shutdown

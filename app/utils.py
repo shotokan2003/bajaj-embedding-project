@@ -11,7 +11,6 @@ import os
 import re
 from concurrent.futures import ThreadPoolExecutor
 from typing import List, Dict, Tuple, Any
-from app.cache import get_cached_document, cache_document
 
 MAX_WORKERS = min(32, os.cpu_count() + 4)  # Optimal thread count
 
@@ -21,23 +20,13 @@ def hash_str(s: str) -> str:
 
 async def download_and_parse_document(url: str) -> Tuple[str, Dict[str, Any]]:
     """
-    Downloads and parses a PDF or DOCX document from a URL with caching.
+    Downloads and parses a PDF or DOCX document from a URL directly (no caching).
     Returns (text, meta) where meta includes page/section info.
     Uses in-memory parsing to avoid temp files.
     """
-    # Check cache first
-    cached = get_cached_document(url)
-    if cached:
-        # Validate the cache format to ensure it's a tuple with (text, meta)
-        if isinstance(cached, tuple) and len(cached) == 2:
-            text, meta = cached
-            # Ensure text is a string and meta is a dict and text is not empty
-            if isinstance(text, str) and isinstance(meta, dict) and text.strip():
-                return text, meta
-        # If cached text is empty or format is invalid, force re-parse
-        import logging
-        logging.warning(f"Invalid or empty cache for {url}. Forcing re-parse.")
-        # Continue to re-parse below
+    import logging
+    logging.info(f"Parsing document from {url}")
+    # No cache checking - always parse directly
 
     # Use aiohttp for async HTTP requests
     import aiohttp
@@ -120,13 +109,8 @@ async def download_and_parse_document(url: str) -> Tuple[str, Dict[str, Any]]:
     if not text.strip():
         raise ValueError("Document parsing failed or empty document.")
     
-    # Cache only if text is valid (don't await to avoid blocking)
-    asyncio.create_task(async_cache_document(url, text, meta))
+    # No caching - return directly
     return text, meta
-
-async def async_cache_document(url: str, text: str, meta: Dict[str, Any]):
-    """Async wrapper to cache document without blocking"""
-    cache_document(url, text, meta)
 
 def extract_page_text(doc: fitz.Document, page_num: int) -> Tuple[str, List[str]]:
     """Extract text and tables from a page (used for parallel processing)"""
@@ -148,7 +132,7 @@ def extract_page_text(doc: fitz.Document, page_num: int) -> Tuple[str, List[str]
         
     return page_text, tables
 
-async def chunk_text(text: str, meta: dict, chunk_size: int = 1000) -> tuple[list[str], list[str]]:
+async def chunk_text(text: str, meta: dict, chunk_size: int = 800) -> tuple[list[str], list[str]]:
     """
     Splits text into semantic chunks (paragraphs, sections) up to chunk_size words.
     Returns chunks and their references.
