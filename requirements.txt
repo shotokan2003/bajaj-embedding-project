@@ -16,3 +16,4 @@ gunicorn
 numpy
 aiohttp
 asyncio
+dataclasses

@@ -75,15 +75,15 @@ def _cerebras_completion(prompt: str) -> str:
     
     for attempt in range(1, MAX_RETRIES + 1):
         try:
-            # Create the chat completion request with optimized parameters
+            # Create the chat completion request with accuracy-optimized parameters
             chat_completion = client.chat.completions.create(
                 messages=[
                     {"role": "user", "content": prompt}
                 ],
                 model=CEREBRAS_MODEL,
-                temperature=0.05,  # Lower temperature for more consistent answers
-                max_tokens=100,    # Reduced for faster generation and concise answers
-                top_p=0.95,        # Focus on high-probability tokens
+                temperature=0.01,  # Even lower for maximum consistency and accuracy
+                max_tokens=120,    # Slightly increased for complete answers
+                top_p=0.9,         # More focused on high-probability tokens
                 stream=False       # Ensure non-streaming for consistency
             )
             

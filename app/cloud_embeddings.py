@@ -8,9 +8,20 @@ import numpy as np
 from typing import List, Dict, Any, Union
 from dotenv import load_dotenv
 import logging
-from time import sleep
+import time
 from tenacity import retry, stop_after_attempt, wait_exponential
 import google.generativeai as genai
+import concurrent.futures
+
+# Load configuration
+try:
+    from app.config import config
+except ImportError:
+    # Fallback if config is not available
+    class DefaultConfig:
+        EMBEDDING_BATCH_SIZE = 24
+        RATE_LIMIT_DELAY = 0.1
+    config = DefaultConfig()
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -54,9 +65,9 @@ def get_embedding(text: str) -> np.ndarray:
         return np.zeros(EMBEDDING_DIMENSION)
     
     # Ensure text is not too long (max tokens for Gemini model)
-    if len(text.split()) > 3000:
-        logger.warning("Text too long, truncating to 3000 words")
-        text = " ".join(text.split()[:3000])
+    if len(text.split()) > 1500:  # Reduced from 3000 for better performance
+        logger.warning("Text too long, truncating to 1500 words")
+        text = " ".join(text.split()[:1500])
     
     try:
         # Get embeddings using the Google GenerativeAI API
@@ -83,46 +94,105 @@ import functools
 
 # No caching - direct API calls only
 
-def encode(texts: List[str], batch_size: int = 16, show_progress_bar: bool = False) -> np.ndarray:
+def encode(texts: List[str], batch_size: int = None, show_progress_bar: bool = False) -> np.ndarray:
     """
-    Encode a list of texts to get embeddings with parallel processing.
-    This method mimics the interface of SentenceTransformer.encode().
-    Optimized for performance with chunked batching and thread pool.
+    Encode a list of texts with optimized batch processing and smart deduplication.
+    Enhanced for better performance and accuracy.
     
     Args:
         texts: List of texts to encode
-        batch_size: Number of texts to process in parallel
-        show_progress_bar: Whether to show a progress bar (ignored, for compatibility only)
+        batch_size: Optimal batch size (uses config default if None)
+        show_progress_bar: Whether to show a progress bar
         
     Returns:
         A numpy array of embeddings
     """
+    if batch_size is None:
+        batch_size = config.EMBEDDING_BATCH_SIZE
+        
     if not texts:
         return np.array([])
     
-    # Deduplicate texts to avoid redundant API calls within the same batch
-    unique_texts = list(set(texts))
-    text_to_idx = {text: i for i, text in enumerate(texts)}
-    idx_to_unique_idx = {i: unique_texts.index(text) for i, text in enumerate(texts)}
+    # Smart deduplication with normalization
+    normalized_texts = []
+    text_to_normalized = {}
     
-    # For very small batches, process sequentially to avoid thread overhead
-    if len(unique_texts) <= 4:
-        unique_embeddings = [get_embedding(text) for text in unique_texts]
+    for text in texts:
+        # Normalize text for deduplication (remove extra spaces, case insensitive)
+        normalized = ' '.join(text.lower().strip().split())
+        normalized_texts.append(normalized)
+        if normalized not in text_to_normalized:
+            text_to_normalized[normalized] = text
+    
+    # Get unique texts preserving original formatting
+    unique_normalized = list(text_to_normalized.keys())
+    unique_texts = [text_to_normalized[norm] for norm in unique_normalized]
+    
+    # Create mapping for reconstruction
+    idx_to_unique_idx = {
+        i: unique_normalized.index(normalized_texts[i]) 
+        for i in range(len(texts))
+    }
+    
+    # Ultra-fast processing strategy - minimal delays
+    if len(unique_texts) <= 8:
+        # Sequential processing for small batches - fastest for <8 texts
+        unique_embeddings = []
+        for text in unique_texts:
+            try:
+                embedding = get_embedding(text)
+                unique_embeddings.append(embedding)
+                time.sleep(0.01)  # Minimal delay
+            except Exception as e:
+                logger.error(f"Error encoding text: {str(e)}")
+                unique_embeddings.append(np.zeros(EMBEDDING_DIMENSION))
     else:
-        # Use thread pool for parallel processing with optimal worker count
-        # More workers for larger batches, but cap based on CPU count
-        num_workers = min(max(batch_size, 8), os.cpu_count() * 2 or 16)
+        # Aggressive parallel processing for larger batches
+        max_workers = 8  # High worker count for speed
+        chunk_size = 3   # Very small chunks for fastest processing
+        unique_embeddings = []
         
-        # Process in parallel
-        with concurrent.futures.ThreadPoolExecutor(max_workers=num_workers) as executor:
-            unique_embeddings = list(executor.map(get_embedding, unique_texts))
+        for i in range(0, len(unique_texts), chunk_size):
+            chunk_texts = unique_texts[i:i + chunk_size]
+            
+            # Fast parallel processing
+            with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+                chunk_embeddings = list(executor.map(safe_get_embedding, chunk_texts))
+            
+            unique_embeddings.extend(chunk_embeddings)
+            
+            # Minimal delay for maximum speed
+            if i + chunk_size < len(unique_texts):
+                time.sleep(0.01)
+            
+            # Report only completion
+            if show_progress_bar and i + chunk_size >= len(unique_texts):
+                logger.info(f"Embedding progress: 100%")
+            
+            unique_embeddings.extend(chunk_embeddings)
+            
+            # Reduced delay between chunks for faster processing
+            if i + chunk_size < len(unique_texts):
+                time.sleep(0.05)  # Reduced from config.RATE_LIMIT_DELAY
+            
+            # Progress reporting - less frequent
+            if show_progress_bar and len(unique_texts) > 20:
+                progress = min(100, (i + chunk_size) * 100 // len(unique_texts))
+                if progress % 50 == 0:  # Report every 50% instead of 25%
+                    logger.info(f"Embedding progress: {progress}%")
     
-    # Map back to original order
-    final_embeddings = [unique_embeddings[idx_to_unique_idx[i]] for i in range(len(texts))]
-    return np.array(final_embeddings)
-        
-        # This code block is unreachable after our updates and should be removed
+    # Map embeddings back to original order
+    final_embeddings = [
+        unique_embeddings[idx_to_unique_idx[i]] 
+        for i in range(len(texts))
+    ]
     
-    # Map unique embeddings back to original texts
-    final_embeddings = [unique_embeddings[idx_to_unique_idx[i]] for i in range(len(texts))]
     return np.array(final_embeddings)
+
+def safe_get_embedding(text: str) -> np.ndarray:
+    """Wrapper for get_embedding with error handling"""
+    try:
+        return get_embedding(text)
+    except Exception as e:
+        logger.error(f"Error encoding text: {str(e)}")
+        return np.zeros(EMBEDDING_DIMENSION)

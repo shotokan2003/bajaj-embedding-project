@@ -12,11 +12,11 @@ import functools
 
 logger = logging.getLogger(__name__)
 
-# Rate limiting constants
-MAX_QPS = 5  # Maximum queries per second
-REQUEST_COOLDOWN = 1.0 / MAX_QPS  # Minimum time between requests
-MAX_BATCH_SIZE = 4  # Maximum number of prompts to process in a single batch
-MAX_WORKERS = 4  # Maximum number of parallel workers
+# Rate limiting constants - ultra-fast optimization
+MAX_QPS = 12  # Aggressive increase for speed  
+REQUEST_COOLDOWN = 1.0 / MAX_QPS  # 83ms between requests
+MAX_BATCH_SIZE = 8  # Larger batches for efficiency
+MAX_WORKERS = 8  # More workers for parallel processing
 
 class CerebrasBatchManager:
     """Manages rate limiting and batch processing for Cerebras API"""

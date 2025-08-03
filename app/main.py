@@ -7,6 +7,7 @@ from fastapi import FastAPI, HTTPException, Request, Depends
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel
 from app.pipeline import process_document_and_answer
+from app.performance import performance_monitor, log_performance_summary
 from contextlib import asynccontextmanager
 import os
 import logging
@@ -56,6 +57,7 @@ async def hackrx_run(
 ):
     """
     Main endpoint: Accepts a document URL and questions, returns answers.
+    Enhanced with performance monitoring.
     """
     start_time = time.time()
     logging.info(f"Received request with {len(req.questions)} questions")
@@ -64,10 +66,46 @@ async def hackrx_run(
         answers = await process_document_and_answer(req.documents, req.questions)
         elapsed = time.time() - start_time
         logging.info(f"Request processed in {elapsed:.2f} seconds")
+        
+        # Record overall request performance
+        performance_monitor.record_operation(
+            "full_request", 
+            elapsed, 
+            success=True,
+            num_questions=len(req.questions),
+            num_answers=len(answers)
+        )
+        
         return {"answers": answers}
     except Exception as e:
+        elapsed = time.time() - start_time
         logging.error(f"Error processing request: {str(e)}", exc_info=True)
+        
+        # Record failed request
+        performance_monitor.record_operation(
+            "full_request", 
+            elapsed, 
+            success=False,
+            error=str(e)
+        )
+        
         raise HTTPException(status_code=400, detail=str(e))
+
+@app.get("/performance/stats")
+async def get_performance_stats():
+    """Get performance statistics"""
+    return performance_monitor.get_summary()
+
+@app.get("/performance/recommendations")
+async def get_performance_recommendations():
+    """Get performance optimization recommendations"""
+    return {"recommendations": performance_monitor.get_recommendations()}
+
+@app.post("/performance/reset")
+async def reset_performance_stats():
+    """Reset performance statistics"""
+    performance_monitor.reset_metrics()
+    return {"message": "Performance metrics reset successfully"}
 
 if __name__ == "__main__":
     import uvicorn

@@ -11,6 +11,11 @@ import os
 import re
 from concurrent.futures import ThreadPoolExecutor
 from typing import List, Dict, Tuple, Any
+from app.performance import monitor_performance
+from app.config import config
+import logging
+
+logger = logging.getLogger(__name__)
 
 MAX_WORKERS = min(32, os.cpu_count() + 4)  # Optimal thread count
 
@@ -18,6 +23,7 @@ def hash_str(s: str) -> str:
     """Returns a SHA256 hash of a string."""
     return hashlib.sha256(s.encode()).hexdigest()
 
+@monitor_performance("document_parsing")
 async def download_and_parse_document(url: str) -> Tuple[str, Dict[str, Any]]:
     """
     Downloads and parses a PDF or DOCX document from a URL directly (no caching).
@@ -56,8 +62,9 @@ async def download_and_parse_document(url: str) -> Tuple[str, Dict[str, Any]]:
         num_pages = len(doc)
         meta["total_pages"] = num_pages
         
-        # Process pages in parallel
-        with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+        # Process pages in parallel with reduced workers for faster processing
+        optimal_workers = min(8, MAX_WORKERS, num_pages)  # Reduced from MAX_WORKERS
+        with ThreadPoolExecutor(max_workers=optimal_workers) as executor:
             tasks = [
                 loop.run_in_executor(
                     executor, 
@@ -113,121 +120,151 @@ async def download_and_parse_document(url: str) -> Tuple[str, Dict[str, Any]]:
     return text, meta
 
 def extract_page_text(doc: fitz.Document, page_num: int) -> Tuple[str, List[str]]:
-    """Extract text and tables from a page (used for parallel processing)"""
+    """Extract text and tables from a page with simplified processing for speed"""
     page = doc[page_num]
+    
+    # Use simple text extraction for speed - skip complex structure detection
     page_text = page.get_text()
     
-    # Extract tables if available (simplified)
+    # Only extract tables if they're simple to find
     tables = []
     try:
+        # Simplified table extraction - timeout after 1 second per page
+        import signal
+        def timeout_handler(signum, frame):
+            raise TimeoutError("Table extraction timeout")
+        
+        signal.signal(signal.SIGALRM, timeout_handler)
+        signal.alarm(1)  # 1 second timeout
+        
         for table in page.find_tables():
-            table_text = ""
-            for row in table.rows:
-                row_texts = [cell.text for cell in row.cells]
-                table_text += " | ".join(row_texts) + "\n"
+            table_text = "\n[TABLE START]\n"
+            for row in table.rows[:5]:  # Limit to first 5 rows for speed
+                row_texts = [cell.text.strip() for cell in row.cells if cell.text.strip()]
+                if row_texts:
+                    table_text += " | ".join(row_texts) + "\n"
+            table_text += "[TABLE END]\n"
             tables.append(table_text)
-    except:
-        # Table extraction is experimental in PyMuPDF
+            if len(tables) >= 3:  # Limit number of tables per page
+                break
+        signal.alarm(0)  # Clear alarm
+    except (Exception, TimeoutError):
+        # Skip table extraction if it takes too long or fails
         pass
         
     return page_text, tables
 
-async def chunk_text(text: str, meta: dict, chunk_size: int = 800) -> tuple[list[str], list[str]]:
+@monitor_performance("text_chunking")
+async def chunk_text(text: str, meta: dict, chunk_size: int = 1000, overlap_size: int = 50) -> tuple[list[str], list[str]]:
     """
-    Splits text into semantic chunks (paragraphs, sections) up to chunk_size words.
-    Returns chunks and their references.
+    Ultra-fast chunking with larger chunks to minimize embedding calls.
     
-    Uses smaller chunk size (800 vs 1000) and better boundary detection to improve retrieval accuracy.
-    Async version for better performance.
+    Args:
+        text: Document text
+        meta: Document metadata 
+        chunk_size: Target chunk size in words (increased for fewer chunks)
+        overlap_size: Minimal overlap for speed
+    
+    Returns:
+        chunks and their references
     """
     # Handle case where text might not be a string
     if not isinstance(text, str):
-        import logging
-        logging.error(f"Expected text to be a string, got {type(text)}. Converting to string.")
         text = str(text)
-    # First, identify key insurance policy sections to preserve intact
-    critical_policy_sections = {
-        "grace period": r'(?i)(\bgrace period\b.*?(?:\.|$)(?:[^\n]*\n?){0,3})',
-        "waiting period": r'(?i)(\bwaiting period\b.*?(?:\.|$)(?:[^\n]*\n?){0,3})',
-        "pre-existing": r'(?i)(\bpre-existing disease.*?(?:\.|$)(?:[^\n]*\n?){0,3})',
-        "maternity": r'(?i)(\bmaternity.*?(?:\.|$)(?:[^\n]*\n?){0,3})',
-        "ayush": r'(?i)(\bayush.*?(?:\.|$)(?:[^\n]*\n?){0,3})',
-        "room rent": r'(?i)(\broom rent.*?(?:\.|$)(?:[^\n]*\n?){0,3})',
-        "renewal": r'(?i)(\brenewal.*?(?:\.|$)(?:[^\n]*\n?){0,3})',
+    
+    # Enhanced critical section extraction for better accuracy
+    critical_keywords = {
+        "grace_period": ["grace period", "premium payment", "due date"],
+        "waiting_period": ["waiting period", "pre-existing", "months"],
+        "maternity": ["maternity", "pregnancy", "childbirth"],
+        "exclusions": ["not covered", "excluded", "exclusion", "limitation"],
+        "room_rent": ["room rent", "room charges", "accommodation"],
+        "ayush": ["ayush", "ayurveda", "alternative medicine"]
     }
     
-    # Extract and save critical sections to ensure they're preserved
+    # Smart critical section extraction with better context
     preserved_sections = []
-    for topic, pattern in critical_policy_sections.items():
-        matches = re.findall(pattern, text)
-        for match in matches:
-            if len(match) > 20:  # Only preserve non-trivial matches
-                preserved_sections.append((match, topic))
+    text_lower = text.lower()
+    sentences = text.split('.')
     
-    # Split by semantic boundaries with improved pattern
-    # Include section headers, page markers, paragraph breaks, bullet points
-    semantic_splits = re.split(
-        r'(?:\n\n+|---|^#{1,3}\s+|\[TABLE.*?\]|\n\d+\.\s+|\n[A-Z]\.\s+|\n•\s+)',
-        text
-    )
+    for topic, keywords in critical_keywords.items():
+        for keyword in keywords:
+            if keyword in text_lower:
+                # Find sentences with context (previous and next sentence)
+                for i, sentence in enumerate(sentences):
+                    if keyword in sentence.lower() and len(sentence.strip()) > 20:
+                        # Build context with surrounding sentences
+                        context_sentences = []
+                        if i > 0:  # Add previous sentence for context
+                            context_sentences.append(sentences[i-1].strip())
+                        context_sentences.append(sentence.strip())
+                        if i < len(sentences) - 1:  # Add next sentence for context
+                            context_sentences.append(sentences[i+1].strip())
+                        
+                        context = '. '.join(context_sentences) + '.'
+                        if len(context) > 80:  # Ensure meaningful context
+                            preserved_sections.append((context, topic.replace('_', ' ')))
+                        break
+                break  # Only one per topic for speed
     
+    # Minimal boundary detection for speed
+    sections = re.split(r'\n={3,}.*?\n|\n\n\n+', text)
+    sections = [s.strip() for s in sections if s.strip()]
+    
+    # Create large chunks efficiently
     chunks = []
     refs = []
-    
-    current_chunk = []
-    current_chunk_size = 0
-    current_ref = ""
     page_refs = meta.get("page_refs", [])
-      
-    for split in semantic_splits:
-        split = split.strip()
-        if not split:
+    
+    def get_page_ref(text_pos: int) -> str:
+        if not page_refs:
+            return ""
+        # Fast lookup - just use first match
+        for cutoff, page in page_refs:
+            if text_pos < cutoff:
+                return page
+        return ""
+    
+    # Process sections into large chunks with minimal overlap
+    for section in sections:
+        if not section.strip():
             continue
             
-        # Find page reference for this split
-        for cutoff, page in page_refs:
-            if text.find(split) < cutoff:
-                ref = page
-                break
+        words = section.split()
+        if len(words) <= chunk_size:
+            chunks.append(section)
+            text_pos = text.find(section[:30])
+            refs.append(get_page_ref(text_pos))
         else:
-            ref = ""
-        
-        split_words = split.split()
-        
-        # If adding this split would make chunk too big, create a new chunk
-        if current_chunk_size + len(split_words) > chunk_size and current_chunk:
-            chunks.append(" ".join(current_chunk))
-            refs.append(current_ref)
-            current_chunk = []
-            current_chunk_size = 0
-            
-        # Add this split to the current chunk
-        current_chunk.extend(split_words)
-        current_chunk_size += len(split_words)
-        if ref and not current_ref:  # Only update ref if we don't have one yet
-            current_ref = ref
+            # Large chunks with minimal overlap for speed
+            for i in range(0, len(words), max(1, chunk_size - overlap_size)):
+                chunk_words = words[i:i + chunk_size]
+                if len(chunk_words) < 50:  # Skip small chunks
+                    break
+                    
+                chunk_text = " ".join(chunk_words)
+                chunks.append(chunk_text)
+                text_pos = text.find(chunk_text[:30])
+                refs.append(get_page_ref(text_pos))
+                
+                if i + chunk_size >= len(words):
+                    break
     
-    # Add the final chunk if it exists
-    if current_chunk:
-        chunks.append(" ".join(current_chunk))
-        refs.append(current_ref)
+    # Fast addition of critical sections
+    existing_chunks_lower = {chunk.lower()[:50] for chunk in chunks}
     
-    # Now add the preserved critical sections as additional chunks
-    # This ensures important policy clauses appear in their own chunks for better retrieval
     for section_text, topic in preserved_sections:
-        # Find page reference for this section
-        for cutoff, page in page_refs:
-            if text.find(section_text) < cutoff:
-                ref = page
-                break
-        else:
-            ref = ""
-        
-        # Only add if not a duplicate (exact match) of an existing chunk
-        if section_text not in chunks:
-            # Add context around section for better understanding
-            enriched_section = f"Policy section about {topic}: {section_text}"
-            chunks.append(enriched_section)
-            refs.append(ref)
+        section_key = section_text.lower()[:50]
+        if section_key not in existing_chunks_lower:
+            enhanced_section = f"[{topic.upper()}] {section_text}"
+            chunks.append(enhanced_section)
+            refs.append("Policy")
+    
+    # Aggressive chunk limit for speed
+    max_chunks = min(config.MAX_CHUNKS, 60)  # Hard limit for ultra-fast processing
+    if len(chunks) > max_chunks:
+        logger.warning(f"Limiting chunks from {len(chunks)} to {max_chunks} for speed")
+        chunks = chunks[:max_chunks]
+        refs = refs[:max_chunks]
     
     return chunks, refs
