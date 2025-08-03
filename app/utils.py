@@ -148,7 +148,7 @@ def extract_page_text(doc: fitz.Document, page_num: int) -> Tuple[str, List[str]
         
     return page_text, tables
 
-async def chunk_text(text: str, meta: dict, chunk_size: int = 800) -> tuple[list[str], list[str]]:
+async def chunk_text(text: str, meta: dict, chunk_size: int = 1000) -> tuple[list[str], list[str]]:
     """
     Splits text into semantic chunks (paragraphs, sections) up to chunk_size words.
     Returns chunks and their references.
