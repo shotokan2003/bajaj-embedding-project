@@ -31,22 +31,14 @@ async def download_and_parse_document(url: str) -> Tuple[str, Dict[str, Any]]:
         # Validate the cache format to ensure it's a tuple with (text, meta)
         if isinstance(cached, tuple) and len(cached) == 2:
             text, meta = cached
-            # Ensure text is a string and meta is a dict
-            if isinstance(text, str) and isinstance(meta, dict):
+            # Ensure text is a string and meta is a dict and text is not empty
+            if isinstance(text, str) and isinstance(meta, dict) and text.strip():
                 return text, meta
-            elif isinstance(text, dict) and not isinstance(meta, dict):
-                # Handle incorrect format - text is a dict, meta might be something else
-                import logging
-                logging.error("Cache returned dict as text instead of string. Fixing format.")
-                # Try to extract correct values
-                return str(text), {} if not isinstance(meta, dict) else meta
-        
-        # If we got here, the cache format was invalid
+        # If cached text is empty or format is invalid, force re-parse
         import logging
-        logging.warning(f"Invalid cache format from get_cached_document. Expected (str, dict) tuple but got {type(cached)}")
-        # Return empty to force re-parsing
-        return "", {}
-    
+        logging.warning(f"Invalid or empty cache for {url}. Forcing re-parse.")
+        # Continue to re-parse below
+
     # Use aiohttp for async HTTP requests
     import aiohttp
     import io
@@ -124,7 +116,11 @@ async def download_and_parse_document(url: str) -> Tuple[str, Dict[str, Any]]:
     else:
         raise ValueError("Unsupported document type.")
     
-    # Cache the document (don't await to avoid blocking)
+    # Ensure text is valid and not empty
+    if not text.strip():
+        raise ValueError("Document parsing failed or empty document.")
+    
+    # Cache only if text is valid (don't await to avoid blocking)
     asyncio.create_task(async_cache_document(url, text, meta))
     return text, meta
 
